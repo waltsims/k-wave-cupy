@@ -8,8 +8,11 @@ This is the k-Wave MATLAB Toolbox with an added CuPy-accelerated Python backend.
 
 **Project Structure:**
 - `k-Wave/` - Main MATLAB toolbox (legacy acoustic simulation toolkit)
+  - `python/kWavePy.py` - Python/CuPy compute engine implementation
+  - `kspaceFirstOrderPy.m` - MATLAB wrapper for Python backend
 - `plans/` - Development plan for Python/CuPy integration
-- `tests/` - Unit and regression tests (currently empty, uses k-Wave's internal test suite)
+- `tests/` - Python backend integration and parity tests
+- `pyproject.toml` - Python project configuration (using uv)
 
 ## Key Architecture Components
 
@@ -53,7 +56,7 @@ cd('k-Wave/testing/kWaveTester')
 kWaveTester(struct('force_plot_off', true))
 ```
 
-### Current Development Focus
+### Current Development Status
 
 The project is implementing a **minimalistic Python/CuPy backend** following the plan in `plans/plan.md`. The goal is to create:
 
@@ -61,10 +64,11 @@ The project is implementing a **minimalistic Python/CuPy backend** following the
 2. **MATLAB Integration**: Direct in-memory calls via `kspaceFirstOrderPy.m`
 3. **Testing**: Validation against existing MATLAB test suite
 
-### Development Phases
-1. **Phase 1**: Data interop verification and 1D implementation
-2. **Phase 2**: 2D/3D generalization with PML boundaries  
-3. **Phase 3**: CuPy GPU acceleration
+### Development Progress
+- **Phase 1** ✅ **COMPLETE**: Data interop verification and 1D implementation achieved <1e-15 parity
+- **Phase 1.5** ✅ **COMPLETE**: Code refactoring to ~65 lines (Python) and ~40 lines (MATLAB)
+- **Phase 2** 🚧 **IN PROGRESS**: 2D/3D generalization with PML boundaries  
+- **Phase 3** ✅ **READY**: CuPy GPU acceleration infrastructure implemented
 
 ### File Patterns and Conventions
 
