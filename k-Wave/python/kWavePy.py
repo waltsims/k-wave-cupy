@@ -44,9 +44,15 @@ def _prepare_field(values, xp, length: int, dtype):
     return arr.astype(dtype, copy=False)
 
 
-def _spectral_derivative(field, dx: float, xp):
-    k = xp.fft.fftfreq(field.size, d=dx) * (2 * xp.pi)
-    return xp.real(xp.fft.ifft(1j * k * xp.fft.fft(field)))
+def _sinc(x, xp):
+    out = xp.ones_like(x, dtype=xp.float64)
+    mask = x != 0
+    out[mask] = xp.sin(x[mask]) / x[mask]
+    return out
+
+
+def _spectral_derivative(field, op, xp):
+    return xp.real(xp.fft.ifft(op * xp.fft.fft(field)))
 
 
 def interop_sanity(array):
@@ -88,18 +94,42 @@ def simulate(
     mask_arr = _prepare_field(mask, xp, Nx, dtype=bool)
 
     ux = xp.zeros_like(p)
-    bulk_modulus = rho0_arr * (c0_arr ** 2)
+    rhox = p / (c0_arr ** 2)
     inv_rho0 = 1.0 / rho0_arr
 
     sensor_idx = xp.nonzero(mask_arr)[0]
     sensor_data = xp.zeros((sensor_idx.size, Nt), dtype=field_dtype)
 
+    # build k in fftshift order to match MATLAB's ifftshift usage
+    k_raw = xp.concatenate(
+        [
+            xp.arange(0, Nx // 2, dtype=xp.float64),
+            xp.arange(-Nx // 2, 0, dtype=xp.float64),
+        ]
+    )
+    k_raw = (2 * xp.pi / (Nx * dx)) * k_raw
+
+    c_ref = float(xp.max(c0_arr))
+    kappa_t = _sinc(0.5 * c_ref * xp.abs(k_raw) * dt, xp)
+    kappa_x = _sinc(0.5 * k_raw * dx, xp)
+    ddx_k = 1j * k_raw
+    shift_pos = xp.exp(1j * k_raw * (dx / 2.0))
+    shift_neg = xp.conj(shift_pos)
+
+    # align with MATLAB's ifftshift(...) before multiplying in k-space
+    dpdx_op = xp.fft.ifftshift(ddx_k * shift_pos * kappa_t)
+    dudx_op = xp.fft.ifftshift(ddx_k * shift_neg * kappa_t * kappa_x)
+
+    dpdx0 = _spectral_derivative(p, dpdx_op, xp)
+    ux = 0.5 * dt * inv_rho0 * dpdx0
+
     for step in range(Nt):
-        dpdx = _spectral_derivative(p, dx, xp)
+        dpdx = _spectral_derivative(p, dpdx_op, xp)
         ux = ux - dt * inv_rho0 * dpdx
 
-        dudx = _spectral_derivative(ux, dx, xp)
-        p = p - dt * bulk_modulus * dudx
+        dudx = _spectral_derivative(ux, dudx_op, xp)
+        rhox = rhox - dt * rho0_arr * dudx
+        p = (c0_arr ** 2) * rhox
 
         sensor_data[:, step] = p[sensor_idx]
 

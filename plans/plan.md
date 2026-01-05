@@ -57,5 +57,5 @@ $$ \frac{\partial \mathbf{u}}{\partial t} = -\frac{1}{\rho_0} \nabla p $$
     - Verify on GPU node.
 
 ## Next Steps
-1. Run the MATLAB tests (`tests/test_interop_sanity.m` and `testing/unit/test_interface_1D.m`) to confirm interop and 1D wrapper.
-2. Add a 1D parity check (pulse propagation) to validate physics vs MATLAB reference.
+1. Run the MATLAB tests (`tests/test_interop_sanity.m`, `tests/test_1d_parity.m`, and `testing/unit/test_interface_1D.m`) to confirm interop, parity, and the 1D wrapper.
+2. Begin Phase 2: add a MATLAB test adapter `kWaveTesterPy.m` that swaps in the Python solver for existing unit tests.

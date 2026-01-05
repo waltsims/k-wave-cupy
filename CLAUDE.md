@@ -98,3 +98,10 @@ When working on the Python backend:
   "/Applications/MATLAB_R2024b.app/bin/matlab" -batch "pyenv('Version', fullfile(pwd,'.venv310','bin','python')); addpath('k-Wave'); addpath('tests'); addpath('k-Wave/testing/unit'); runtests({'tests/test_interop_sanity','k-Wave/testing/unit/test_interface_1D'});"
   ```
 - If MATLAB reports the environment is already loaded, restart MATLAB and rerun the command.
+
+#### Parity test command
+```
+"/Applications/MATLAB_R2024b.app/bin/matlab" -batch "pyenv('Version', fullfile(pwd,'.venv310','bin','python')); addpath('k-Wave'); addpath('tests'); addpath('k-Wave/testing/unit'); runtests({'tests/test_interop_sanity','tests/test_1d_parity','k-Wave/testing/unit/test_interface_1D'});"
+```
+
+- To visualise differences, run `tests/plot_1d_parity.m` (saves `tests/plots/1d_parity.png`).
