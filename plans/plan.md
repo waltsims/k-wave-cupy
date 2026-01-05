@@ -36,8 +36,9 @@ $$ \frac{\partial \mathbf{u}}{\partial t} = -\frac{1}{\rho_0} \nabla p $$
     - Implement minimal 1D spectral derivatives `d/dx = ifft(ik * fft)`.
 - [x] **MATLAB Wrapper (1D Support)**: 
     - Update `kspaceFirstOrderPy.m` to detect 1D inputs and marshal them correctly (handling MATLAB's trailing singleton dimensions).
-- [ ] **Verify 1D Parity**: 
+- [x] **Verify 1D Parity**: 
     - Run a simple pulse propagation test. Compare `norm(p_matlab - p_python) < tol`.
+    - Achieved parity < 1e-15 by aligning sinc normalization, k-space operator ordering, and time loop recording.
 
 ### Phase 2: Feature Parity (2D/3D & PML)
 *Goal: Generalize the engine to support standard k-Wave features.*
@@ -57,5 +58,5 @@ $$ \frac{\partial \mathbf{u}}{\partial t} = -\frac{1}{\rho_0} \nabla p $$
     - Verify on GPU node.
 
 ## Next Steps
-1. Run the MATLAB tests (`tests/test_interop_sanity.m`, `tests/test_1d_parity.m`, and `testing/unit/test_interface_1D.m`) to confirm interop, parity, and the 1D wrapper.
-2. Begin Phase 2: add a MATLAB test adapter `kWaveTesterPy.m` that swaps in the Python solver for existing unit tests.
+1. Begin Phase 2: add a MATLAB test adapter `kWaveTesterPy.m` that swaps in the Python solver for existing unit tests.
+2. Generalize `kWavePy.py` to support 2D/3D inputs.

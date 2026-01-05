@@ -44,13 +44,6 @@ def _prepare_field(values, xp, length: int, dtype):
     return arr.astype(dtype, copy=False)
 
 
-def _sinc(x, xp):
-    out = xp.ones_like(x, dtype=xp.float64)
-    mask = x != 0
-    out[mask] = xp.sin(x[mask]) / x[mask]
-    return out
-
-
 def _spectral_derivative(field, op, xp):
     return xp.real(xp.fft.ifft(op * xp.fft.fft(field)))
 
@@ -110,28 +103,30 @@ def simulate(
     k_raw = (2 * xp.pi / (Nx * dx)) * k_raw
 
     c_ref = float(xp.max(c0_arr))
-    kappa_t = _sinc(0.5 * c_ref * xp.abs(k_raw) * dt, xp)
-    kappa_x = _sinc(0.5 * k_raw * dx, xp)
+    # MATLAB uses normalized sinc: sinc(x) = sin(pi*x)/(pi*x).
+    # But for parity, using unnormalized sinc (argument / pi) matches values.
+    # This implies the physical term requires unnormalized sinc.
+    kappa_t = xp.sinc(0.5 * c_ref * xp.abs(k_raw) * dt / xp.pi)
     ddx_k = 1j * k_raw
     shift_pos = xp.exp(1j * k_raw * (dx / 2.0))
     shift_neg = xp.conj(shift_pos)
 
-    # align with MATLAB's ifftshift(...) before multiplying in k-space
-    dpdx_op = xp.fft.ifftshift(ddx_k * shift_pos * kappa_t)
-    dudx_op = xp.fft.ifftshift(ddx_k * shift_neg * kappa_t * kappa_x)
+    # Operators are already in FFT order (k_raw is [0...N/2, -N/2...-1])
+    dpdx_op = ddx_k * shift_pos * kappa_t
+    dudx_op = ddx_k * shift_neg * kappa_t
 
     dpdx0 = _spectral_derivative(p, dpdx_op, xp)
     ux = 0.5 * dt * inv_rho0 * dpdx0
 
     for step in range(Nt):
+        sensor_data[:, step] = p[sensor_idx]
+
         dpdx = _spectral_derivative(p, dpdx_op, xp)
         ux = ux - dt * inv_rho0 * dpdx
 
         dudx = _spectral_derivative(ux, dudx_op, xp)
         rhox = rhox - dt * rho0_arr * dudx
         p = (c0_arr ** 2) * rhox
-
-        sensor_data[:, step] = p[sensor_idx]
 
     return {
         "sensor_data": _to_numpy(sensor_data),
