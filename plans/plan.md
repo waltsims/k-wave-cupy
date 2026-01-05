@@ -27,14 +27,14 @@ $$ \frac{\partial \mathbf{u}}{\partial t} = -\frac{1}{\rho_0} \nabla p $$
 ### Phase 1: The "Steel Thread" (Interop & 1D)
 *Goal: Prove the data travels correctly and the simplest physics works.*
 
-- [ ] **Risk Spike: Data Layout**: 
+- [x] **Risk Spike: Data Layout**: 
     - Create `tests/test_interop_sanity.m`: Send a non-symmetric 2D array to Python, modify it (e.g., `A[0,1] = 99`), return it, and verify indices match MATLAB expectations (Row vs Column major check).
-- [ ] **1D Interface Test (Failing)**: 
+- [x] **1D Interface Test (Failing)**: 
     - Create `testing/unit/test_interface_1D.m` invoking `kspaceFirstOrderPy` with a 1D grid. Assert it fails cleanly (TDD).
-- [ ] **Minimal 1D Engine (Python)**: 
+- [x] **Minimal 1D Engine (Python)**: 
     - Implement `kWavePy.simulate` to handle 1D arrays `(Nx, 1)`.
     - Implement minimal 1D spectral derivatives `d/dx = ifft(ik * fft)`.
-- [ ] **MATLAB Wrapper (1D Support)**: 
+- [x] **MATLAB Wrapper (1D Support)**: 
     - Update `kspaceFirstOrderPy.m` to detect 1D inputs and marshal them correctly (handling MATLAB's trailing singleton dimensions).
 - [ ] **Verify 1D Parity**: 
     - Run a simple pulse propagation test. Compare `norm(p_matlab - p_python) < tol`.
@@ -52,10 +52,10 @@ $$ \frac{\partial \mathbf{u}}{\partial t} = -\frac{1}{\rho_0} \nabla p $$
     - Verify against `acousticFieldPropagator` tests.
 
 ### Phase 3: Acceleration
-- [ ] **CuPy Backend**:
+- [x] **CuPy Backend**:
     - Add logic to switch `xp = cupy` if available.
     - Verify on GPU node.
 
 ## Next Steps
-1. Create `tests/test_interop_sanity.m` to settle the row-major question.
-2. Implement 1D support in `kWavePy.py`.
+1. Run the MATLAB tests (`tests/test_interop_sanity.m` and `testing/unit/test_interface_1D.m`) to confirm interop and 1D wrapper.
+2. Add a 1D parity check (pulse propagation) to validate physics vs MATLAB reference.
