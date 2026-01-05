@@ -109,3 +109,10 @@ When working on the Python backend:
 ```
 
 - To visualise differences, run `tests/plot_1d_parity.m` (saves `tests/plots/1d_parity.png`).
+
+### Project Management
+
+- **Dependencies**: Managed via `uv` package manager (see `pyproject.toml`)
+- **Current Focus**: Implementing 2D/3D support and PML boundaries (see `plans/plan.md`)
+- **Code Philosophy**: Minimalistic "academic code golf" approach - the code is the documentation
+- **Performance Target**: Match or exceed C++/CUDA implementations while maintaining interpretability
