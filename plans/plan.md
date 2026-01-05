@@ -24,6 +24,7 @@ $$ \frac{\partial \mathbf{u}}{\partial t} = -\frac{1}{\rho_0} \nabla p $$
 
 ## Phases
 
+
 ### Phase 1: The "Steel Thread" (Interop & 1D)
 *Goal: Prove the data travels correctly and the simplest physics works.*
 
@@ -39,6 +40,15 @@ $$ \frac{\partial \mathbf{u}}{\partial t} = -\frac{1}{\rho_0} \nabla p $$
 - [x] **Verify 1D Parity**: 
     - Run a simple pulse propagation test. Compare `norm(p_matlab - p_python) < tol`.
     - Achieved parity < 1e-15 by aligning sinc normalization, k-space operator ordering, and time loop recording.
+
+### Phase 1.5: The "Zen Garden" (Refactoring)
+*Goal: Ensure code is minimalistic, expressive, and easily interpretable.*
+- [x] **Academic Code Golf**:
+    - Reduced `kWavePy.py` to ~65 lines (was 135).
+    - Reduced `kspaceFirstOrderPy.m` to ~40 lines (was 108).
+    - Unified validation and data loading logic.
+    - Verified 1D parity logic preservation.
+- [ ] **Initial Perf Eval**: Compare runtimes between python and matlab impl.
 
 ### Phase 2: Feature Parity (2D/3D & PML)
 *Goal: Generalize the engine to support standard k-Wave features.*

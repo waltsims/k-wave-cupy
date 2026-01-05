@@ -1,134 +1,76 @@
 """
-Minimal CuPy/NumPy backend for k-Wave (1D steel thread).
+Minimal k-Wave Python Backend.
 """
-
-from __future__ import annotations
-
-from typing import Any, Dict
-
 import numpy as np
+try: import cupy as cp
+except ImportError: cp = None
 
-try:
-    import cupy as cp
-
-    _CUPY_AVAILABLE = True
-except Exception:  # pragma: no cover - optional dependency
-    cp = None
-    _CUPY_AVAILABLE = False
-
-
-def _select_xp(backend: str):
-    prefer_gpu = backend in ("auto", "gpu")
-    if prefer_gpu and _CUPY_AVAILABLE:
-        return cp
-    return np
-
-
-def _to_numpy(array):
-    if _CUPY_AVAILABLE and isinstance(array, cp.ndarray):
-        return cp.asnumpy(array)
-    return np.asarray(array)
-
-
-def _flatten_f(array, xp):
-    arr = xp.asarray(array)
-    return arr.reshape(-1, order="F")
-
-
-def _prepare_field(values, xp, length: int, dtype):
-    arr = _flatten_f(values, xp)
-    if arr.size == 1:
-        return xp.full(length, float(arr.reshape(-1)[0]), dtype=dtype)
-    if arr.size != length:
-        raise ValueError(f"Expected {length} samples, got {arr.size}")
-    return arr.astype(dtype, copy=False)
-
-
-def _spectral_derivative(field, op, xp):
-    return xp.real(xp.fft.ifft(op * xp.fft.fft(field)))
-
-
-def interop_sanity(array):
+def simulate(kgrid, medium, source, sensor, backend="auto"):
     """
-    Mutate a Python array to check MATLAB/Python index ordering.
+    1D k-Space Pseudospectral Wave Propagator.
     """
-    arr = np.array(array, copy=True)
-    arr[0, 1] = 99
-    return arr
+    # 1. Setup Backend (CPU/GPU)
+    xp = cp if cp and backend in ("auto", "gpu") else np
+    
+    # 2. Extract Simulation Parameters
+    Nx, dx = int(kgrid["Nx"]), float(kgrid["dx"])
+    Nt, dt = int(kgrid["Nt"]), float(kgrid["dt"])
 
+    # 3. Load Physics (supports scalar expansion)
+    def load(obj, keys, default=None, dtype=float):
+        val = next((obj.get(k) for k in keys if obj.get(k) is not None), default)
+        if val is None: raise ValueError(f"Missing required parameter: {keys[0]}")
+        arr = xp.array(val, dtype=dtype).flatten(order="F")
+        return xp.full(Nx, arr[0], dtype=dtype) if arr.size == 1 else arr
 
-def simulate(
-    kgrid: Dict[str, Any],
-    medium: Dict[str, Any],
-    source: Dict[str, Any],
-    sensor: Dict[str, Any],
-    backend: str = "auto",
-):
-    """
-    Minimal 1D k-space pseudospectral leapfrog solver.
-    """
-    xp = _select_xp(backend)
+    c0   = load(medium, ["sound_speed", "c0"])
+    rho0 = load(medium, ["density", "rho0"], 1000.0)
+    p    = load(source, ["p0"], 0.0)
+    mask = load(sensor, ["mask"], True, dtype=bool)
 
-    Nx = int(kgrid["Nx"])
-    dx = float(kgrid["dx"])
-    Nt = int(kgrid["Nt"])
-    dt = float(kgrid["dt"])
+    # CFL Check
+    cfl = float(xp.max(c0) * dt / dx)
+    if cfl > 1.0: print(f"Warning: Unstable CFL condition: {cfl:.2f} > 1.0")
 
-    c0 = medium.get("sound_speed", medium.get("c0", 1500.0))
-    rho0 = medium.get("density", medium.get("rho0", 1000.0))
+    # 4. Initialize State
+    u = xp.zeros_like(p)
+    rho = p / c0**2
+    sensor_data = xp.zeros((int(xp.sum(mask)), Nt), dtype=p.dtype)
 
-    p0 = source.get("p0", xp.zeros(Nx))
-    mask = sensor.get("mask", xp.ones(Nx, dtype=bool))
+    # 5. Precompute k-space Operators
+    # k-vector: [0, dk, ..., -dk]
+    k = 2 * np.pi * xp.fft.fftfreq(Nx, d=dx)
+    
+    # Time-staggered k-space correction: sinc(c*k*dt/2)
+    # Note: np.sinc(x) is sin(pi*x)/(pi*x), so we scale arg by 1/pi
+    kappa = xp.sinc((xp.max(c0) * k * dt / 2) / np.pi)
 
-    field_dtype = xp.float64
-    p = _prepare_field(p0, xp, Nx, dtype=field_dtype)
-    c0_arr = _prepare_field(c0, xp, Nx, dtype=field_dtype)
-    rho0_arr = _prepare_field(rho0, xp, Nx, dtype=field_dtype)
-    mask_arr = _prepare_field(mask, xp, Nx, dtype=bool)
+    # Gradient (p->u) and Divergence (u->rho) operators with shifts
+    op_grad = 1j * k * kappa * xp.exp( 1j * k * dx/2)
+    op_div  = 1j * k * kappa * xp.exp(-1j * k * dx/2)
 
-    ux = xp.zeros_like(p)
-    rhox = p / (c0_arr ** 2)
-    inv_rho0 = 1.0 / rho0_arr
+    def diff(f, op): return xp.real(xp.fft.ifft(op * xp.fft.fft(f)))
 
-    sensor_idx = xp.nonzero(mask_arr)[0]
-    sensor_data = xp.zeros((sensor_idx.size, Nt), dtype=field_dtype)
+    # 6. Time Loop (Leapfrog)
+    # Initialize u at t = -dt/2 (backward half-step)
+    # Assumption: u(t=0) = 0. Using central difference at t=0:
+    # (u(dt/2) - u(-dt/2)) / dt = -grad(p0)/rho0
+    # Implies: u(-dt/2) = (dt / (2 * rho0)) * grad(p0)
+    u += (dt / (2 * rho0)) * diff(p, op_grad)
 
-    # build k in fftshift order to match MATLAB's ifftshift usage
-    k_raw = xp.concatenate(
-        [
-            xp.arange(0, Nx // 2, dtype=xp.float64),
-            xp.arange(-Nx // 2, 0, dtype=xp.float64),
-        ]
-    )
-    k_raw = (2 * xp.pi / (Nx * dx)) * k_raw
+    for t in range(Nt):
+        sensor_data[:, t] = p[mask]
+        
+        u   -= (dt / rho0) * diff(p, op_grad)
+        rho -= (dt * rho0) * diff(u, op_div)
+        p    = c0**2 * rho
 
-    c_ref = float(xp.max(c0_arr))
-    # MATLAB uses normalized sinc: sinc(x) = sin(pi*x)/(pi*x).
-    # But for parity, using unnormalized sinc (argument / pi) matches values.
-    # This implies the physical term requires unnormalized sinc.
-    kappa_t = xp.sinc(0.5 * c_ref * xp.abs(k_raw) * dt / xp.pi)
-    ddx_k = 1j * k_raw
-    shift_pos = xp.exp(1j * k_raw * (dx / 2.0))
-    shift_neg = xp.conj(shift_pos)
+    return {"sensor_data": _cpu(sensor_data), "pressure": _cpu(p)}
 
-    # Operators are already in FFT order (k_raw is [0...N/2, -N/2...-1])
-    dpdx_op = ddx_k * shift_pos * kappa_t
-    dudx_op = ddx_k * shift_neg * kappa_t
+def interop_sanity(arr):
+    """Verify MATLAB/Python data layout."""
+    a = np.array(arr, copy=True)
+    a[0, 1] = 99
+    return a
 
-    dpdx0 = _spectral_derivative(p, dpdx_op, xp)
-    ux = 0.5 * dt * inv_rho0 * dpdx0
-
-    for step in range(Nt):
-        sensor_data[:, step] = p[sensor_idx]
-
-        dpdx = _spectral_derivative(p, dpdx_op, xp)
-        ux = ux - dt * inv_rho0 * dpdx
-
-        dudx = _spectral_derivative(ux, dudx_op, xp)
-        rhox = rhox - dt * rho0_arr * dudx
-        p = (c0_arr ** 2) * rhox
-
-    return {
-        "sensor_data": _to_numpy(sensor_data),
-        "pressure": _to_numpy(p),
-    }
+def _cpu(x): return x.get() if hasattr(x, "get") else x
