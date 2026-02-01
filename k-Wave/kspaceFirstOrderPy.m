@@ -15,7 +15,7 @@ kWavePy = py.importlib.import_module('kWavePy');
 py.importlib.reload(kWavePy);
 
 % 3. Marshal Data
-toPy = @(x) py.numpy.array(double(x), pyargs('order', 'F'));
+toPy = @(x) py.numpy.array(castForPy(x), pyargs('order', 'F'));
 val  = @(s,n,d) toPy(getField(s, n, d));
 
 k_py = py.dict(pyargs('Nx',int64(kgrid.Nx), 'dx',kgrid.dx, 'Nt',int64(kgrid.Nt), 'dt',kgrid.dt));
@@ -26,6 +26,14 @@ d_py = py.dict(pyargs('mask', val(sensor,{'mask'},1)));
 % 4. Run Simulation
 res = kWavePy.simulate(k_py, m_py, s_py, d_py, pyargs('backend', char(p.Results.Backend)));
 sensor_data = double(res{'sensor_data'});
+end
+
+function y = castForPy(x)
+    if isa(x, 'single')
+        y = x;
+    else
+        y = double(x);
+    end
 end
 
 function v = getField(s, names, default)
