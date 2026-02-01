@@ -7,12 +7,15 @@ if isempty(kgrid.dt), error('Time step dt not set.'); end
 p = inputParser; addParameter(p, 'Backend', 'auto'); parse(p, varargin{:});
 
 % 2. Setup Python Environment
-module_dir = fullfile(fileparts(mfilename('fullpath')), 'python');
-if ~any(strcmp(cell(py.sys.path), module_dir))
-    insert(py.sys.path, int32(0), module_dir);
+persistent kWavePy
+if isempty(kWavePy)
+    module_dir = fullfile(fileparts(mfilename('fullpath')), 'python');
+    if ~any(strcmp(cell(py.sys.path), module_dir))
+        insert(py.sys.path, int32(0), module_dir);
+    end
+    kWavePy = py.importlib.import_module('kWavePy');
+    py.importlib.reload(kWavePy);
 end
-kWavePy = py.importlib.import_module('kWavePy');
-py.importlib.reload(kWavePy);
 
 % 3. Marshal Data
 toPy = @(x) py.numpy.array(castForPy(x), pyargs('order', 'F'));
