@@ -48,8 +48,8 @@ jobs:
         uses: matlab-actions/run-command@v2
         with:
           command: |
-            ${{ matrix.shim_path != '' && format('addpath(''{0}/{1}'');', github.workspace, matrix.shim_path) || '' }}
             addpath('${{ github.workspace }}/k-Wave');
+            ${{ matrix.shim_path != '' && format('addpath(''{0}/{1}'');', github.workspace, matrix.shim_path) || '' }}
             cd('${{ github.workspace }}/k-Wave/testing/unit');
             test_struct = runUnitTests('${{ matrix.test_pattern }}',false);
             save('test_struct.mat', 'test_struct');
