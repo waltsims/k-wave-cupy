@@ -134,6 +134,9 @@ end
 % =========================================================================
 
 % Detect if Python backend is active by checking where kspaceFirstOrder1D resolves
+% Note: Shim detection requires correct MATLAB path order. When using shims:
+%   addpath('k-Wave');      % Add k-Wave first
+%   addpath('tests/shims'); % Add shims last (goes to front of search path)
 func_path = which('kspaceFirstOrder1D');
 using_python_backend = contains(func_path, 'shims');
 
