@@ -50,17 +50,29 @@ $$ \frac{\partial \mathbf{u}}{\partial t} = -\frac{1}{\rho_0} \nabla p $$
     - Verified 1D parity logic preservation.
 - [ ] **Initial Perf Eval**: Compare runtimes between python and matlab impl.
 
-### Phase 2: Feature Parity (2D/3D & PML)
-*Goal: Generalize the engine to support standard k-Wave features.*
+### Phase 2: Feature Parity via Test-Based Development
+*Goal: Generalize the engine to support standard k-Wave features using the existing test suite.*
 
-- [ ] **Test Adapter Implementation**:
-    - Create `kWaveTesterPy.m` that runs existing MATLAB unit tests but injects `kspaceFirstOrderPy` as the solver.
-- [ ] **2D/3D Generalization**:
-    - Expand `kWavePy.py` to handle N-dimensions.
-    - Validate row/column major indexing for 2D/3D FFTs.
-- [ ] **PML Implementation**:
-    - Implement the Perfectly Matched Layer (essential for non-periodic simulation).
-    - Verify against `acousticFieldPropagator` tests.
+#### Strategy: The "Shim" Architecture
+Instead of modifying existing tests, we will inject a "Shim" path that redirects standard k-Wave function calls (e.g., `kspaceFirstOrder1D`) to our Python wrapper (`kspaceFirstOrderPy`).
+
+- [ ] **1D Shim Validation**:
+    - Create `tests/shims/kspaceFirstOrder1D.m` which simply calls `kspaceFirstOrderPy`.
+    - Relax `kspaceFirstOrderPy.m` argument parsing to ignore unsupported flags (like `PMLSize`, `PlotSim`).
+    - **Verify**: Run `kspaceFirstOrder1D_check_source_scaling_p.m` with shims enabled. It should pass or fail only on numerics.
+- [ ] **N-Dimensional Python Upgrade**:
+    - Refactor `kWavePy.py` to handle N-dimensions dynamically (generic `op_grad` and `op_div` lists).
+    - Ensure `Nx, Ny, Nz` unpacking handles missing dimensions gracefully.
+    - **Verify**: Ensure 1D tests still pass with the N-D code.
+- [ ] **2D/3D Shims**:
+    - Add `tests/shims/kspaceFirstOrder2D.m` and `kspaceFirstOrder3D.m`.
+    - **Verify**: Run `kspaceFirstOrder2D_check_source_scaling_p.m` and 3D equivalents.
+- [ ] **Missing Physics Implementation**:
+    - Implement **PML** (Perfectly Matched Layer) to fix boundary reflection failures.
+    - Implement **Loss** (Power Law Absorption) to fix regression tests.
+    - Implement **Nonlinearity** (BonA) to fix high-intensity tests.
+- [ ] **CI Integration**:
+    - Update GitHub Actions to run the full test suite twice: once normally, and once with the Shim path injected.
 
 ### Phase 3: Acceleration
 - [x] **CuPy Backend**:
@@ -68,5 +80,6 @@ $$ \frac{\partial \mathbf{u}}{\partial t} = -\frac{1}{\rho_0} \nabla p $$
     - Verify on GPU node.
 
 ## Next Steps
-1. Begin Phase 2: add a MATLAB test adapter `kWaveTesterPy.m` that swaps in the Python solver for existing unit tests.
-2. Generalize `kWavePy.py` to support 2D/3D inputs.
+1. Execute the **1D Shim Validation** (create shim, update parser).
+2. Refactor `kWavePy.py` for N-Dimensions.
+3. Enable 2D/3D shims and begin implementing missing physics (PML first).
