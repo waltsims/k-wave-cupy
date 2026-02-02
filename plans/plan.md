@@ -56,10 +56,11 @@ $$ \frac{\partial \mathbf{u}}{\partial t} = -\frac{1}{\rho_0} \nabla p $$
 #### Strategy: The "Shim" Architecture
 Instead of modifying existing tests, we will inject a "Shim" path that redirects standard k-Wave function calls (e.g., `kspaceFirstOrder1D`) to our Python wrapper (`kspaceFirstOrderPy`).
 
-- [ ] **1D Shim Validation**:
+- [x] **1D Shim Validation**:
     - Create `tests/shims/kspaceFirstOrder1D.m` which simply calls `kspaceFirstOrderPy`.
     - Relax `kspaceFirstOrderPy.m` argument parsing to ignore unsupported flags (like `PMLSize`, `PlotSim`).
     - **Verify**: Run `kspaceFirstOrder1D_check_source_scaling_p.m` with shims enabled. It should pass or fail only on numerics.
+    - ✅ Test passed! Shim architecture validated successfully.
 - [ ] **N-Dimensional Python Upgrade**:
     - Refactor `kWavePy.py` to handle N-dimensions dynamically (generic `op_grad` and `op_div` lists).
     - Ensure `Nx, Ny, Nz` unpacking handles missing dimensions gracefully.

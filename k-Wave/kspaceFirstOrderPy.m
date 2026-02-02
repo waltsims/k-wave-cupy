@@ -4,7 +4,7 @@ function sensor_data = kspaceFirstOrderPy(kgrid, medium, source, sensor, varargi
 % 1. Validation & Parsing
 if kgrid.dim ~= 1, error('Only 1D grids supported.'); end
 if isempty(kgrid.dt), error('Time step dt not set.'); end
-p = inputParser; addParameter(p, 'Backend', 'auto'); parse(p, varargin{:});
+p = inputParser; p.KeepUnmatched = true; addParameter(p, 'Backend', 'auto'); parse(p, varargin{:});
 
 % 2. Setup Python Environment
 persistent kWavePy
