@@ -61,19 +61,30 @@ Instead of modifying existing tests, we will inject a "Shim" path that redirects
     - Relax `kspaceFirstOrderPy.m` argument parsing to ignore unsupported flags (like `PMLSize`, `PlotSim`).
     - **Verify**: Run `kspaceFirstOrder1D_check_source_scaling_p.m` with shims enabled. It should pass or fail only on numerics.
     - ✅ Test passed! Shim architecture validated successfully.
+- [x] **CI Integration**:
+    - Update GitHub Actions to run the full test suite twice: once normally, and once with the Shim path injected.
+    - ✅ Implemented matrix strategy: runs both MATLAB baseline and Python backend (1D only) in parallel.
+    - See `TESTING_STRATEGY.md` for details.
+- [ ] **Complete 1D Physics Features** (Test-Driven Development):
+    - Run CI to identify which 1D tests fail with Python backend.
+    - Implement missing features iteratively based on test failures:
+      - **PML** (Perfectly Matched Layer) to fix boundary reflection failures.
+      - **Power Law Absorption** to fix attenuation tests.
+      - **Source Corrections** (k-space and frequency-based) for accurate source modeling.
+      - **Nonlinearity** (BonA) to fix high-intensity tests.
+    - **Goal**: 100% pass rate for 1D tests in CI.
 - [ ] **N-Dimensional Python Upgrade**:
     - Refactor `kWavePy.py` to handle N-dimensions dynamically (generic `op_grad` and `op_div` lists).
     - Ensure `Nx, Ny, Nz` unpacking handles missing dimensions gracefully.
     - **Verify**: Ensure 1D tests still pass with the N-D code.
 - [ ] **2D/3D Shims**:
     - Add `tests/shims/kspaceFirstOrder2D.m` and `kspaceFirstOrder3D.m`.
+    - Update CI matrix to include 2D and 3D test patterns.
     - **Verify**: Run `kspaceFirstOrder2D_check_source_scaling_p.m` and 3D equivalents.
-- [ ] **Missing Physics Implementation**:
-    - Implement **PML** (Perfectly Matched Layer) to fix boundary reflection failures.
-    - Implement **Loss** (Power Law Absorption) to fix regression tests.
-    - Implement **Nonlinearity** (BonA) to fix high-intensity tests.
-- [ ] **CI Integration**:
-    - Update GitHub Actions to run the full test suite twice: once normally, and once with the Shim path injected.
+- [ ] **Complete 2D/3D Physics Features** (Test-Driven Development):
+    - Run CI to identify which 2D/3D tests fail with Python backend.
+    - Implement missing features iteratively (same approach as 1D).
+    - **Goal**: 100% pass rate for all dimensional tests in CI.
 
 ### Phase 3: Acceleration
 - [x] **CuPy Backend**:
@@ -81,6 +92,9 @@ Instead of modifying existing tests, we will inject a "Shim" path that redirects
     - Verify on GPU node.
 
 ## Next Steps
-1. Execute the **1D Shim Validation** (create shim, update parser).
-2. Refactor `kWavePy.py` for N-Dimensions.
-3. Enable 2D/3D shims and begin implementing missing physics (PML first).
+1. ✅ **1D Shim Validation** - Complete
+2. ✅ **CI Integration** - Complete
+3. **Push and review CI results** to identify which 1D physics features need implementation.
+4. **Iteratively implement 1D physics features** guided by CI test failures.
+5. **Refactor for N-Dimensions** once 1D achieves 100% pass rate.
+6. **Expand to 2D/3D** using the same test-driven approach.
