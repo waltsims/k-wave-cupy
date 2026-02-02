@@ -17,11 +17,11 @@ jobs:
       matrix:
         include:
           - backend: matlab
-            path_setup: 'addpath("${{ github.workspace }}/k-Wave");'
+            shim_path: ""
             test_pattern: ""
             artifact_suffix: ""
           - backend: python-1d
-            path_setup: 'addpath("${{ github.workspace }}/tests/shims"); addpath("${{ github.workspace }}/k-Wave");'
+            shim_path: "tests/shims"
             test_pattern: "kspaceFirstOrder1D"
             artifact_suffix: "_python_backend"
     steps:
@@ -48,9 +48,10 @@ jobs:
         uses: matlab-actions/run-command@v2
         with:
           command: |
-            ${{ matrix.path_setup }}
-            cd("${{ github.workspace }}/k-Wave/testing/unit");
-            test_struct = runUnitTests("${{ matrix.test_pattern }}",false);
+            ${{ matrix.shim_path != '' && format('addpath(''{0}/{1}'');', github.workspace, matrix.shim_path) || '' }}
+            addpath('${{ github.workspace }}/k-Wave');
+            cd('${{ github.workspace }}/k-Wave/testing/unit');
+            test_struct = runUnitTests('${{ matrix.test_pattern }}',false);
             save('test_struct.mat', 'test_struct');
           startup-options: -nojvm -logfile output.log
 
@@ -58,8 +59,8 @@ jobs:
         uses: matlab-actions/run-command@v2
         with:
           command: |
-            addpath("${{ github.workspace }}/k-Wave/testing");
-            cd("${{ github.workspace }}/k-Wave/testing/unit");
+            addpath('${{ github.workspace }}/k-Wave/testing');
+            cd('${{ github.workspace }}/k-Wave/testing/unit');
             load('test_struct.mat', 'test_struct');
             save_artifact(test_struct);
           startup-options: -nojvm 
@@ -70,12 +71,12 @@ jobs:
           name: unit_test_results${{ matrix.artifact_suffix }}
           path: ${{ github.workspace }}/k-Wave/testing/unit/test_results.json
 
-      - name: Test results 
+      - name: Test results
         uses: matlab-actions/run-command@v2
         with:
           command: |
-            addpath("${{ github.workspace }}/k-Wave/testing");  
-            cd("${{ github.workspace }}/k-Wave/testing/unit");
+            addpath('${{ github.workspace }}/k-Wave/testing');
+            cd('${{ github.workspace }}/k-Wave/testing/unit');
             load('test_struct.mat', 'test_struct');
             show_test_results(test_struct);
             disp('  ');
@@ -101,18 +102,18 @@ jobs:
         uses: matlab-actions/run-command@v2
         with:
           command: |
-            addpath("${{ github.workspace }}/k-Wave");  
-            cd("${{ github.workspace }}/k-Wave/testing/regression");
+            addpath('${{ github.workspace }}/k-Wave');
+            cd('${{ github.workspace }}/k-Wave/testing/regression');
             generateRegressionData
           startup-options: -nojvm 
 
-      - name: Run regression tests 
+      - name: Run regression tests
         uses: matlab-actions/run-command@v2
         with:
           command: |
-            addpath("${{ github.workspace }}/k-Wave");   
-            cd("${{ github.workspace }}/k-Wave/testing/regression");
-            test_struct = runRegressionTests("${{ github.workspace }}/k-Wave/testing/regression",false);
+            addpath('${{ github.workspace }}/k-Wave');
+            cd('${{ github.workspace }}/k-Wave/testing/regression');
+            test_struct = runRegressionTests('${{ github.workspace }}/k-Wave/testing/regression',false);
             save('test_struct.mat', 'test_struct');
           startup-options: -nojvm 
 
@@ -120,11 +121,11 @@ jobs:
         uses: matlab-actions/run-command@v2
         with:
           command: |
-            addpath("${{ github.workspace }}/k-Wave/testing");  
-            cd("${{ github.workspace }}/k-Wave/testing/regression");
+            addpath('${{ github.workspace }}/k-Wave/testing');
+            cd('${{ github.workspace }}/k-Wave/testing/regression');
             load('test_struct.mat', 'test_struct');
             save_artifact(test_struct);
-          startup-options: -nojvm 
+          startup-options: -nojvm
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -132,12 +133,12 @@ jobs:
           name: regression_test_results
           path: ${{ github.workspace }}/k-Wave/testing/regression/test_results.json
 
-      - name: Test results 
+      - name: Test results
         uses: matlab-actions/run-command@v2
         with:
           command: |
-            addpath("${{ github.workspace }}/k-Wave/testing");  
-            cd("${{ github.workspace }}/k-Wave/testing/regression");
+            addpath('${{ github.workspace }}/k-Wave/testing');
+            cd('${{ github.workspace }}/k-Wave/testing/regression');
             load('test_struct.mat', 'test_struct');
             show_test_results(test_struct);
             disp('  ');
