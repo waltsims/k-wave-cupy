@@ -98,9 +98,9 @@ arch -arm64 /Applications/MATLAB_R2024b.app/bin/matlab -batch "addpath('k-Wave')
 
 **Important**: Add k-Wave BEFORE shims. In MATLAB, the last `addpath()` goes to the front of the search path, so this ensures shims are found first.
 
-### Single shim validation test
+### Comprehensive 1D physics test (84 scenarios)
 ```bash
-arch -arm64 /Applications/MATLAB_R2024b.app/bin/matlab -batch "run('tests/run_shim_validation.m')"
+arch -arm64 /Applications/MATLAB_R2024b.app/bin/matlab -batch "pyenv('Version', fullfile(pwd,'.venv310','bin','python')); addpath('k-Wave'); addpath('tests/shims'); cd('k-Wave/testing/unit'); kspaceFirstOrder1D_compare_plane_waves(false, false)"
 ```
 
 ## Test Status Tracking
