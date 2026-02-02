@@ -142,6 +142,7 @@ jobs:
   regression-tests:
     name: Regression tests
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'  # Only run on main branch
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
