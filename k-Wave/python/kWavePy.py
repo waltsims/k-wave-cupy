@@ -49,34 +49,69 @@ def simulate(kgrid, medium, source, sensor, backend="auto"):
     sensor_data = xp.zeros((int(xp.sum(mask)), Nt), dtype=p.dtype)
 
     # 5. Precompute k-space Operators
-    # k-vector: [0, dk, ..., -dk]
     k = 2 * np.pi * xp.fft.fftfreq(Nx, d=dx)
-    
-    # Time-staggered k-space correction: sinc(c*k*dt/2)
-    # Note: np.sinc(x) is sin(pi*x)/(pi*x), so we scale arg by 1/pi
     kappa = xp.sinc((xp.max(c0) * k * dt / 2) / np.pi)
-
-    # Gradient (p->u) and Divergence (u->rho) operators with shifts
     op_grad = 1j * k * kappa * xp.exp( 1j * k * dx/2)
     op_div  = 1j * k * kappa * xp.exp(-1j * k * dx/2)
 
     def diff(f, op): return xp.real(xp.fft.ifft(op * xp.fft.fft(f)))
 
-    # 6. Time Loop (Leapfrog with Staggered Grid)
+    # 6. Build Physics Operators (composable, return 0 if inactive)
+    absorption, dispersion, nonlinearity, nonlinear_factor, source_p, source_u = \
+        _build_physics_ops(medium, source, rho0, xp)
+
+    # 7. Time Loop (Leapfrog with Staggered Grid)
     # Initialize u at t = -dt/2 (backward half-step)
-    # Assumption: u(t=0) = 0. Using central difference at t=0:
-    # (u(dt/2) - u(-dt/2)) / dt = -grad(p0)/rho0_sgx
-    # Implies: u(-dt/2) = (dt / (2 * rho0_sgx)) * grad(p0)
     u += (dt / (2 * rho0_sgx)) * diff(p, op_grad)
 
     for t in range(Nt):
         sensor_data[:, t] = p[mask]
 
-        u   -= (dt / rho0_sgx) * diff(p, op_grad)
-        rho -= (dt * rho0) * diff(u, op_div)
-        p    = c0**2 * rho
+        # Momentum equation with velocity sources
+        grad_p = diff(p, op_grad)
+        u -= (dt / rho0_sgx) * (grad_p + source_u(t, u))
+
+        # Mass conservation with nonlinearity
+        duxdx = diff(u, op_div)
+        rho -= (dt * rho0) * duxdx * nonlinear_factor(rho)
+
+        # Equation of state (all physics terms compose additively)
+        p = c0**2 * (rho + absorption(duxdx) - dispersion(rho) + nonlinearity(rho))
+
+        # Pressure sources (additive or dirichlet)
+        p = source_p(t, p)
 
     return {"sensor_data": _cpu(sensor_data), "pressure": _cpu(p)}
+
+def _build_physics_ops(medium, source, rho0, xp):
+    """
+    Build composable physics operators.
+    Each returns 0 (or identity) if feature not present.
+    """
+    # --- Absorption (power-law attenuation) ---
+    # Not implemented yet - returns 0
+    absorption = lambda duxdx: 0
+    dispersion = lambda rho: 0
+
+    # --- Nonlinearity (BonA parameter) ---
+    # Not implemented yet - returns 0 for p term, 1.0 for mass conservation
+    BonA = medium.get("BonA", 0)
+    if BonA != 0:
+        nonlinearity = lambda rho: BonA * rho**2 / (2 * rho0)
+        nonlinear_factor = lambda rho: (2*rho + rho0) / rho0
+    else:
+        nonlinearity = lambda rho: 0
+        nonlinear_factor = lambda rho: 1.0
+
+    # --- Pressure Sources (time-varying) ---
+    # Not implemented yet - returns identity
+    source_p = lambda t, p: p
+
+    # --- Velocity Sources (time-varying) ---
+    # Not implemented yet - returns 0
+    source_u = lambda t, u: 0
+
+    return absorption, dispersion, nonlinearity, nonlinear_factor, source_p, source_u
 
 def interop_sanity(arr):
     """Verify MATLAB/Python data layout."""
