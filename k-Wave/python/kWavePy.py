@@ -28,6 +28,17 @@ def simulate(kgrid, medium, source, sensor, backend="auto"):
     p    = load(source, ["p0"], 0.0)
     mask = load(sensor, ["mask"], True, dtype=bool)
 
+    # Interpolate density to staggered grid (x + dx/2) for heterogeneous media
+    # Velocity is defined at x + dx/2, so we need density there for momentum equation
+    if rho0.size > 1:
+        # Staggered grid: rho_sgx[i] = 0.5 * (rho0[i] + rho0[i+1])
+        # Last point uses extrapolation (same as MATLAB's NaN handling)
+        rho0_sgx = xp.zeros_like(rho0)
+        rho0_sgx[:-1] = 0.5 * (rho0[:-1] + rho0[1:])
+        rho0_sgx[-1] = rho0[-1]  # Boundary: use same value
+    else:
+        rho0_sgx = rho0
+
     # CFL Check
     cfl = float(xp.max(c0) * dt / dx)
     if cfl > 1.0: print(f"Warning: Unstable CFL condition: {cfl:.2f} > 1.0")
@@ -51,17 +62,17 @@ def simulate(kgrid, medium, source, sensor, backend="auto"):
 
     def diff(f, op): return xp.real(xp.fft.ifft(op * xp.fft.fft(f)))
 
-    # 6. Time Loop (Leapfrog)
+    # 6. Time Loop (Leapfrog with Staggered Grid)
     # Initialize u at t = -dt/2 (backward half-step)
     # Assumption: u(t=0) = 0. Using central difference at t=0:
-    # (u(dt/2) - u(-dt/2)) / dt = -grad(p0)/rho0
-    # Implies: u(-dt/2) = (dt / (2 * rho0)) * grad(p0)
-    u += (dt / (2 * rho0)) * diff(p, op_grad)
+    # (u(dt/2) - u(-dt/2)) / dt = -grad(p0)/rho0_sgx
+    # Implies: u(-dt/2) = (dt / (2 * rho0_sgx)) * grad(p0)
+    u += (dt / (2 * rho0_sgx)) * diff(p, op_grad)
 
     for t in range(Nt):
         sensor_data[:, t] = p[mask]
-        
-        u   -= (dt / rho0) * diff(p, op_grad)
+
+        u   -= (dt / rho0_sgx) * diff(p, op_grad)
         rho -= (dt * rho0) * diff(u, op_div)
         p    = c0**2 * rho
 
