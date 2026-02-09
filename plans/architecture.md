@@ -29,38 +29,33 @@ p = c0**2 * (rho + absorption(duxdx) - dispersion(rho) + nonlinearity(rho))
 
 ## Target Architecture
 
-### Time Loop (8 lines, zero conditionals)
+### Time Loop (6 lines, zero conditionals)
 ```python
 for t in range(Nt):
     sensor_data[:, t] = p[mask]
 
-    # Momentum equation with velocity sources
     grad_p = diff(p, op_grad)
     u -= (dt / rho0_sgx) * (grad_p + source_u(t, u))
 
-    # Mass conservation with nonlinearity
     duxdx = diff(u, op_div)
-    rho += dt * (-rho0 * duxdx * nonlinear_factor(rho))
+    rho -= (dt * rho0) * duxdx * nonlinear_factor(rho)
 
-    # Equation of state (all physics terms compose additively)
     p = c0**2 * (rho + absorption(duxdx) - dispersion(rho) + nonlinearity(rho))
-
-    # Pressure sources (additive or dirichlet)
     p = source_p(t, p)
 ```
 
+**Note:** Operators (`absorption`, `source_p`, etc.) are unpacked from `_build_physics_ops()` at setup time. No dictionary lookups in the loop.
+
 ### Operator Factory Pattern
 
-All complexity is isolated in `_build_physics_ops()` during initialization:
+All complexity is isolated in `_build_physics_ops()` during initialization. Operators are returned via **tuple unpacking** (not dictionary) for maximum readability:
 
 ```python
-def _build_physics_ops(medium, source, k, kappa, xp, Nx, dt):
+def _build_physics_ops(medium, source, rho0, xp):
     """
     Build composable physics operators.
     Each returns 0 (or identity) if feature not present.
     """
-    ops = {}
-
     # --- Absorption (fractional Laplacian) ---
     alpha_coeff = medium.get("alpha_coeff", 0)
     if alpha_coeff > 0:
@@ -69,27 +64,68 @@ def _build_physics_ops(medium, source, k, kappa, xp, Nx, dt):
         absorb_nabla1 = (xp.abs(k) ** alpha_power) * xp.exp(1j * np.pi * alpha_power / 2)
         absorb_nabla2 = (xp.abs(k) ** alpha_power)
 
-        ops['absorption'] = lambda duxdx: absorb_tau * diff_k(duxdx, absorb_nabla1)
-        ops['dispersion'] = lambda rho: absorb_eta * diff_k(rho, absorb_nabla2)
+        absorption = lambda duxdx: absorb_tau * diff_k(duxdx, absorb_nabla1)
+        dispersion = lambda rho: absorb_eta * diff_k(rho, absorb_nabla2)
     else:
-        ops['absorption'] = lambda duxdx: 0
-        ops['dispersion'] = lambda rho: 0
+        absorption = lambda duxdx: 0
+        dispersion = lambda rho: 0
 
     # --- Nonlinearity (BonA parameter) ---
     BonA = medium.get("BonA", 0)
     if BonA != 0:
-        ops['nonlinearity'] = lambda rho: BonA * rho**2 / (2 * rho0)
-        ops['nonlinear_factor'] = lambda rho: (2*rho + rho0) / rho0
+        nonlinearity = lambda rho: BonA * rho**2 / (2 * rho0)
+        nonlinear_factor = lambda rho: (2*rho + rho0) / rho0
     else:
-        ops['nonlinearity'] = lambda rho: 0
-        ops['nonlinear_factor'] = lambda rho: 1.0
+        nonlinearity = lambda rho: 0
+        nonlinear_factor = lambda rho: 1.0
 
     # --- Source Modes (p, u with additive/dirichlet/additive-no-correction) ---
-    ops['source_p'] = _build_source_operator(source, 'p', k, dt, xp)
-    ops['source_u'] = _build_source_operator(source, 'u', k, dt, xp)
+    source_p = _build_source_operator(source, 'p', k, dt, xp)
+    source_u = _build_source_operator(source, 'u', k, dt, xp)
 
-    return ops
+    return absorption, dispersion, nonlinearity, nonlinear_factor, source_p, source_u
 ```
+
+**Usage** (tuple unpacking at call site):
+```python
+# Setup phase (line 60)
+absorption, dispersion, nonlinearity, nonlinear_factor, source_p, source_u = \
+    _build_physics_ops(medium, source, rho0, xp)
+
+# Time loop uses operators directly (no dictionary lookup)
+p = c0**2 * (rho + absorption(duxdx) - dispersion(rho) + nonlinearity(rho))
+p = source_p(t, p)
+```
+
+### Why Tuple Unpacking, Not Dictionary?
+
+**Critical Design Decision:** We use tuple unpacking instead of returning a dictionary because:
+
+1. **Textbook Readability**
+   - ✅ `p = c0**2 * (rho + absorption(duxdx) - dispersion(rho))`
+   - ❌ `p = c0**2 * (rho + ops['absorption'](duxdx) - ops['dispersion'](rho))`
+   - The equation should read like LaTeX, not data structure access
+
+2. **Zero Visual Noise**
+   - Dictionary access adds 6-7 characters per term (`ops['...']`) that communicate zero physics
+   - Tuple unpacking removes all namespace prefixes in the time loop
+   - Each character in the equation should carry meaning
+
+3. **IDE-Friendly**
+   - Refactoring works (rename symbol, find usages)
+   - Typos caught at parse-time, not runtime
+   - No risk of key errors
+
+4. **Scales Naturally**
+   - 6 operators: Single tuple unpacking
+   - 10+ operators: Group by physics type, still use tuple unpacking
+   - Dictionary appropriate only for plugin systems or user-defined operators
+
+**The Test:** Could you copy-paste the equation into a textbook?
+- ❌ `ops['absorption'](duxdx)` → No, the dictionary is implementation noise
+- ✅ `absorption(duxdx)` → Yes, this is actual physics notation
+
+When code is meant to be read as mathematics, **remove everything that isn't mathematics**.
 
 ## Key Benefits
 
@@ -115,11 +151,13 @@ def _build_physics_ops(medium, source, k, kappa, xp, Nx, dt):
 ## Code Size Target
 
 With **all features** implemented (absorption, nonlinearity, sources, PML):
-- **Time loop**: 10 lines (unchanged from current)
-- **Setup**: 40 lines (grid, parameters, k-space operators)
+- **Time loop**: 6 lines (pure physics equations)
+- **Setup**: 40 lines (grid, parameters, k-space operators, tuple unpacking)
 - **Operator factory**: 100 lines (~20 lines per operator × 5 operators)
 - **Utilities**: 30 lines (absorption coefficients, helpers)
 - **Total**: ~180 lines (vs 1000+ lines in MATLAB reference)
+
+**Current status (Week 1 refactor complete)**: 122 lines with linear + lossless physics
 
 ## Migration Path
 
@@ -244,18 +282,18 @@ end
 ```
 **Cognitive Load**: High - must trace 18 possible execution paths
 
-### Python Time Loop (8 lines)
+### Python Time Loop (6 lines)
 ```python
 for t in range(Nt):
     sensor_data[:, t] = p[mask]
     grad_p = diff(p, op_grad)
     u -= (dt / rho0_sgx) * (grad_p + source_u(t, u))
     duxdx = diff(u, op_div)
-    rho += dt * (-rho0 * duxdx * nonlinear_factor(rho))
+    rho -= (dt * rho0) * duxdx * nonlinear_factor(rho)
     p = c0**2 * (rho + absorption(duxdx) - dispersion(rho) + nonlinearity(rho))
     p = source_p(t, p)
 ```
-**Cognitive Load**: Low - equations match textbook, 1 execution path
+**Cognitive Load**: Low - equations match textbook, 1 execution path, zero visual noise
 
 ## Why This Architecture Wins
 
