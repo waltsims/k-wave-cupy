@@ -93,14 +93,7 @@ def simulate(kgrid, medium, source, sensor, backend="auto"):
             p, rho = p0_initial.copy(), p0_initial / c0**2
             u = (dt / (2 * rho0_sgx)) * spectral_diff(p, op_grad)
 
-        # Debug: catch exact failure point
-        indexed = p[mask]
-        if indexed.shape != sensor_data[:, t].shape:
-            raise ValueError(
-                f"FAIL at t={t}: p[mask].shape={indexed.shape}, target={sensor_data[:,t].shape}, "
-                f"mask.sum={int(xp.sum(mask))}, mask.nonzero={xp.nonzero(mask)}"
-            )
-        sensor_data[:, t] = indexed
+        sensor_data[:, t] = p[mask]
 
     return {"sensor_data": _to_cpu(sensor_data), "pressure": _to_cpu(p)}
 
