@@ -3,7 +3,13 @@ function sensor_data = kspaceFirstOrderPy(kgrid, medium, source, sensor, varargi
 
 % 1. Validation & Parsing
 if kgrid.dim ~= 1, error('Only 1D grids supported.'); end
-if isempty(kgrid.dt), error('Time step dt not set.'); end
+if isempty(kgrid.dt) || (ischar(kgrid.dt) && strcmp(kgrid.dt, 'auto'))
+    error('kspaceFirstOrderPy:TimeNotSet', ...
+        ['Time array not set. The Python backend requires explicit time array.\n' ...
+         'Use one of:\n' ...
+         '  kgrid.makeTime(medium.sound_speed)      %% Auto-calculate based on CFL\n' ...
+         '  kgrid.setTime(Nt, dt)                   %% Set explicitly']);
+end
 p = inputParser; p.KeepUnmatched = true; addParameter(p, 'Backend', 'auto'); parse(p, varargin{:});
 
 % 2. Setup Python Environment
