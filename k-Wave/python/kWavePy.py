@@ -92,9 +92,9 @@ def _build_physics_ops(medium, source, k, rho0, xp):
     absorption, dispersion = _build_absorption_ops(medium, k, rho0, xp)
 
     # --- Nonlinearity (BonA parameter) ---
-    # Not implemented yet - returns 0 for p term, 1.0 for mass conservation
     BonA = medium.get("BonA", 0)
-    if BonA != 0:
+    is_nonlinear = not (np.all(BonA == 0) if hasattr(BonA, '__len__') else BonA == 0)
+    if is_nonlinear:
         nonlinearity = lambda rho: BonA * rho**2 / (2 * rho0)
         nonlinear_factor = lambda rho: (2*rho + rho0) / rho0
     else:
