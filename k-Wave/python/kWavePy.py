@@ -5,121 +5,93 @@ import numpy as np
 try: import cupy as cp
 except ImportError: cp = None
 
+def _is_nonzero(x):
+    """Check if x is nonzero (handles scalars and arrays uniformly)."""
+    return not (np.all(x == 0) if hasattr(x, '__len__') else x == 0)
+
+def _to_cpu(x):
+    """Move CuPy array to CPU if needed."""
+    return x.get() if hasattr(x, "get") else x
+
 def simulate(kgrid, medium, source, sensor, backend="auto"):
-    """
-    1D k-Space Pseudospectral Wave Propagator.
-    """
-    # 1. Setup Backend (CPU/GPU)
+    """1D k-Space Pseudospectral Wave Propagator."""
+    # Use GPU if available and requested
     xp = cp if cp and backend in ("auto", "gpu") else np
-    
-    # 2. Extract Simulation Parameters
+
     Nx, dx = int(kgrid["Nx"]), float(kgrid["dx"])
     Nt, dt = int(kgrid["Nt"]), float(kgrid["dt"])
 
-    # 3. Load Physics (supports scalar expansion)
-    def load(obj, keys, default=None, dtype=float):
+    # Load with scalar expansion: single values become uniform arrays
+    def load_field(obj, keys, default=None, dtype=float):
         val = next((obj.get(k) for k in keys if obj.get(k) is not None), default)
         if val is None: raise ValueError(f"Missing required parameter: {keys[0]}")
         arr = xp.array(val, dtype=dtype).flatten(order="F")
         return xp.full(Nx, arr[0], dtype=dtype) if arr.size == 1 else arr
 
-    c0   = load(medium, ["sound_speed", "c0"])
-    rho0 = load(medium, ["density", "rho0"], 1000.0)
-    mask = load(sensor, ["mask"], True, dtype=bool)
-
-    # Initialize pressure to zero (source.p0 is applied at t=0 like MATLAB)
+    c0   = load_field(medium, ["sound_speed", "c0"])
+    rho0 = load_field(medium, ["density", "rho0"], 1000.0)
+    mask = load_field(sensor, ["mask"], True, dtype=bool)
     p = xp.zeros(Nx, dtype=float)
 
-    # Interpolate density to staggered grid (x + dx/2) for heterogeneous media
-    # Velocity is defined at x + dx/2, so we need density there for momentum equation
-    if rho0.size > 1:
-        # Staggered grid: rho_sgx[i] = 0.5 * (rho0[i] + rho0[i+1])
-        # Last point uses extrapolation (same as MATLAB's NaN handling)
-        rho0_sgx = xp.zeros_like(rho0)
-        rho0_sgx[:-1] = 0.5 * (rho0[:-1] + rho0[1:])
-        rho0_sgx[-1] = rho0[-1]  # Boundary: use same value
-    else:
-        rho0_sgx = rho0
+    # Density at staggered grid points (x + dx/2) for velocity update
+    rho0_sgx = xp.concatenate([0.5 * (rho0[:-1] + rho0[1:]), rho0[-1:]]) if rho0.size > 1 else rho0
 
-    # CFL Check
+    # Warn if simulation will be unstable
     cfl = float(xp.max(c0) * dt / dx)
     if cfl > 1.0: print(f"Warning: Unstable CFL condition: {cfl:.2f} > 1.0")
 
-    # 4. Initialize State
-    u = xp.zeros_like(p)
-    rho = p / c0**2
-    sensor_data = xp.zeros((int(xp.sum(mask)), Nt), dtype=p.dtype)
-
-    # 5. Precompute k-space Operators
+    # k-space operators with time-staggering correction (sinc factor)
     c_ref = float(xp.max(c0))
     k = 2 * np.pi * xp.fft.fftfreq(Nx, d=dx)
     kappa = xp.sinc((c_ref * k * dt / 2) / np.pi)
-    source_kappa = xp.cos(c_ref * k * dt / 2)  # For additive source correction
-    op_grad = 1j * k * kappa * xp.exp( 1j * k * dx/2)
-    op_div  = 1j * k * kappa * xp.exp(-1j * k * dx/2)
+    source_kappa = xp.cos(c_ref * k * dt / 2)  # Correction for additive sources
+    op_grad = 1j * k * kappa * xp.exp( 1j * k * dx/2)  # Gradient with forward shift
+    op_div  = 1j * k * kappa * xp.exp(-1j * k * dx/2)  # Divergence with backward shift
+    spectral_diff = lambda f, op: xp.real(xp.fft.ifft(op * xp.fft.fft(f)))
 
-    def diff(f, op): return xp.real(xp.fft.ifft(op * xp.fft.fft(f)))
+    # Physics operators return 0 or identity when feature is disabled
+    absorption, dispersion, nonlinearity, nonlinear_factor = _build_physics_ops(medium, k, rho0, xp)
+    source_p_op, source_u_op = _build_source_ops(source, c0, dt, dx, Nx, source_kappa, xp)
 
-    # 6. Build Physics Operators (composable, return 0 if inactive)
-    absorption, dispersion, nonlinearity, nonlinear_factor = \
-        _build_physics_ops(medium, source, k, rho0, xp)
-
-    # 7. Build Source Operators
-    source_p_op, source_u_op = _build_source_ops(source, c0, rho0, dt, dx, Nx, Nt, source_kappa, xp)
-
-    # 8. Time Loop (Leapfrog with Staggered Grid)
-    # Check if using initial pressure source (p0) vs time-varying (p)
+    # Initial pressure source (applied at t=0, overriding computed values)
     p0_raw = source.get("p0", 0)
-    has_p0 = not (np.all(p0_raw == 0) if hasattr(p0_raw, '__len__') else p0_raw == 0)
-    p0_initial = xp.array(p0_raw, dtype=float).flatten(order="F") if has_p0 else None
+    p0_initial = xp.array(p0_raw, dtype=float).flatten(order="F") if _is_nonzero(p0_raw) else None
 
-    # Initialize u at t = -dt/2 (backward half-step)
-    # Note: For source.p0, p starts at 0, so this gives u=0 initially (like MATLAB)
-    u += (dt / (2 * rho0_sgx)) * diff(p, op_grad)
+    u, rho = xp.zeros_like(p), xp.zeros_like(p)
+    sensor_data = xp.zeros((int(xp.sum(mask)), Nt), dtype=p.dtype)
+
+    # Initialize velocity at t=-dt/2 for leapfrog staggering
+    u += (dt / (2 * rho0_sgx)) * spectral_diff(p, op_grad)
 
     for t in range(Nt):
-        # Momentum equation
-        grad_p = diff(p, op_grad)
-        u -= (dt / rho0_sgx) * grad_p
-
-        # Velocity sources (applied after momentum equation)
+        # Momentum equation: du/dt = -grad(p)/rho
+        u -= (dt / rho0_sgx) * spectral_diff(p, op_grad)
         u = source_u_op(t, u)
 
-        # Mass conservation with nonlinearity
-        duxdx = diff(u, op_div)
+        # Mass conservation: drho/dt = -rho0 * div(u) * nonlinear_factor
+        duxdx = spectral_diff(u, op_div)
         rho -= (dt * rho0) * duxdx * nonlinear_factor(rho)
-
-        # Pressure sources (applied to rho before equation of state)
         rho = source_p_op(t, rho)
 
-        # Equation of state (all physics terms compose additively)
+        # Equation of state with absorption/dispersion/nonlinearity
         p = c0**2 * (rho + absorption(duxdx) - dispersion(rho) + nonlinearity(rho))
 
-        # For source.p0: override at t=0 with initial pressure and velocity (MATLAB behavior)
-        if t == 0 and has_p0:
-            p = p0_initial.copy()
-            rho = p / c0**2
-            # Set initial velocity: u(t=-dt/2) such that u(t=0) = 0
-            # This is u = (dt/2) * (1/rho0_sgx) * grad(p)
-            u = (dt / (2 * rho0_sgx)) * diff(p, op_grad)
+        # For source.p0: override computed values at t=0 (MATLAB convention)
+        if t == 0 and p0_initial is not None:
+            p, rho = p0_initial.copy(), p0_initial / c0**2
+            u = (dt / (2 * rho0_sgx)) * spectral_diff(p, op_grad)
 
-        # Record sensor data at END of time step (like MATLAB)
         sensor_data[:, t] = p[mask]
 
-    return {"sensor_data": _cpu(sensor_data), "pressure": _cpu(p)}
+    return {"sensor_data": _to_cpu(sensor_data), "pressure": _to_cpu(p)}
 
-def _build_physics_ops(medium, source, k, rho0, xp):
-    """
-    Build composable physics operators.
-    Each returns 0 (or identity) if feature not present.
-    """
-    # --- Absorption (power-law attenuation) ---
+def _build_physics_ops(medium, k, rho0, xp):
+    """Build composable physics operators (return 0/identity when disabled)."""
     absorption, dispersion = _build_absorption_ops(medium, k, rho0, xp)
 
-    # --- Nonlinearity (BonA parameter) ---
     BonA = medium.get("BonA", 0)
-    is_nonlinear = not (np.all(BonA == 0) if hasattr(BonA, '__len__') else BonA == 0)
-    if is_nonlinear:
+    if _is_nonzero(BonA):
+        # Nonlinear acoustics: pressure depends on rho^2
         nonlinearity = lambda rho: BonA * rho**2 / (2 * rho0)
         nonlinear_factor = lambda rho: (2*rho + rho0) / rho0
     else:
@@ -128,158 +100,100 @@ def _build_physics_ops(medium, source, k, rho0, xp):
 
     return absorption, dispersion, nonlinearity, nonlinear_factor
 
-def _build_source_ops(source, c0, rho0, dt, dx, Nx, Nt, source_kappa, xp):
+def _build_source_ops(source, c0, dt, dx, Nx, source_kappa, xp):
     """Build time-varying source operators for pressure and velocity."""
 
-    def apply_kspace_correction(source_mat):
-        return xp.real(xp.fft.ifft(source_kappa * xp.fft.fft(source_mat)))
+    def build_source_operator(mask_raw, signal_raw, mode, scale_dirichlet, scale_additive):
+        """Generic factory for source operators (pressure or velocity)."""
+        if not (_is_nonzero(mask_raw) and _is_nonzero(signal_raw)):
+            return lambda t, field: field
 
-    # --- Pressure Source ---
-    p_mask_raw = source.get("p_mask", 0)
-    p_signal_raw = source.get("p", 0)
-    p_mode = source.get("p_mode", "additive")
+        mask = xp.array(mask_raw, dtype=bool).flatten(order="F")
+        signal = xp.array(signal_raw, dtype=float).flatten(order="F")
+        c0_at_source = c0[mask] if c0.size > 1 else c0
 
-    has_p_mask = not (np.all(p_mask_raw == 0) if hasattr(p_mask_raw, '__len__') else p_mask_raw == 0)
-    has_p_signal = not (np.all(p_signal_raw == 0) if hasattr(p_signal_raw, '__len__') else p_signal_raw == 0)
-
-    if has_p_mask and has_p_signal:
-        p_mask = xp.array(p_mask_raw, dtype=bool).flatten(order="F")
-        p_signal = xp.array(p_signal_raw, dtype=float).flatten(order="F")
-
-        # Scale source signal (MATLAB: kspaceFirstOrder_scaleSourceTerms.m)
-        # N = 1 for 1D
-        c0_at_source = c0[p_mask] if c0.size > 1 else c0
-        if p_mode == "dirichlet":
-            # Dirichlet: scale by 1/(N * c0^2) = 1/c0^2
-            p_scaled = p_signal / (c0_at_source**2)
+        # Scale factors from MATLAB's kspaceFirstOrder_scaleSourceTerms.m
+        if mode == "dirichlet":
+            scaled = signal / scale_dirichlet(c0_at_source)
         else:
-            # Additive: scale by 2*dt/(N * c0 * dx) = 2*dt/(c0 * dx)
-            p_scaled = p_signal * (2 * dt / (c0_at_source * dx))
+            scaled = signal * scale_additive(c0_at_source)
 
-        if p_mode == "dirichlet":
-            def source_p_op(t, rho):
-                if t < len(p_scaled):
-                    rho[p_mask] = p_scaled[t] if p_scaled.ndim == 1 else p_scaled[:, t]
-                return rho
-        elif p_mode == "additive":
-            def source_p_op(t, rho):
-                if t < len(p_scaled):
-                    source_mat = xp.zeros(Nx, dtype=rho.dtype)
-                    source_mat[p_mask] = p_scaled[t] if p_scaled.ndim == 1 else p_scaled[:, t]
-                    rho = rho + apply_kspace_correction(source_mat)
-                return rho
+        get_value = lambda t: scaled[t] if scaled.ndim == 1 else scaled[:, t]
+
+        if mode == "dirichlet":
+            # Replace field values at source points
+            def apply_source(t, field):
+                if t < len(scaled): field[mask] = get_value(t)
+                return field
+        elif mode == "additive":
+            # Add with k-space correction for numerical stability
+            def apply_source(t, field):
+                if t < len(scaled):
+                    src = xp.zeros(Nx, dtype=field.dtype)
+                    src[mask] = get_value(t)
+                    return field + xp.real(xp.fft.ifft(source_kappa * xp.fft.fft(src)))
+                return field
         else:  # additive-no-correction
-            def source_p_op(t, rho):
-                if t < len(p_scaled):
-                    rho[p_mask] = rho[p_mask] + (p_scaled[t] if p_scaled.ndim == 1 else p_scaled[:, t])
-                return rho
-    else:
-        source_p_op = lambda t, rho: rho
+            # Add without k-space correction (for testing/comparison)
+            def apply_source(t, field):
+                if t < len(scaled): field[mask] = field[mask] + get_value(t)
+                return field
 
-    # --- Velocity Source ---
-    u_mask_raw = source.get("u_mask", 0)
-    u_signal_raw = source.get("ux", 0)
-    u_mode = source.get("u_mode", "additive")
+        return apply_source
 
-    has_u_mask = not (np.all(u_mask_raw == 0) if hasattr(u_mask_raw, '__len__') else u_mask_raw == 0)
-    has_u_signal = not (np.all(u_signal_raw == 0) if hasattr(u_signal_raw, '__len__') else u_signal_raw == 0)
+    # Pressure source: scale by 1/c0^2 (dirichlet) or 2*dt/(c0*dx) (additive)
+    source_p_op = build_source_operator(
+        source.get("p_mask", 0), source.get("p", 0), source.get("p_mode", "additive"),
+        scale_dirichlet=lambda c: c**2,
+        scale_additive=lambda c: 2*dt/(c*dx))
 
-    if has_u_mask and has_u_signal:
-        u_mask = xp.array(u_mask_raw, dtype=bool).flatten(order="F")
-        u_signal = xp.array(u_signal_raw, dtype=float).flatten(order="F")
-
-        # Scale velocity source (MATLAB: kspaceFirstOrder_scaleSourceTerms.m)
-        # Dirichlet: no scaling (values used directly)
-        # Additive: scale by 2*c0*dt/dx
-        c0_at_source = c0[u_mask] if c0.size > 1 else c0
-        if u_mode == "dirichlet":
-            u_scaled = u_signal  # No scaling for dirichlet
-        else:
-            u_scaled = u_signal * (2 * c0_at_source * dt / dx)
-
-        if u_mode == "dirichlet":
-            def source_u_op(t, u):
-                if t < len(u_scaled):
-                    u[u_mask] = u_scaled[t] if u_scaled.ndim == 1 else u_scaled[:, t]
-                return u
-        elif u_mode == "additive":
-            def source_u_op(t, u):
-                if t < len(u_scaled):
-                    source_mat = xp.zeros(Nx, dtype=u.dtype)
-                    source_mat[u_mask] = u_scaled[t] if u_scaled.ndim == 1 else u_scaled[:, t]
-                    u = u + apply_kspace_correction(source_mat)
-                return u
-        else:  # additive-no-correction
-            def source_u_op(t, u):
-                if t < len(u_scaled):
-                    u[u_mask] = u[u_mask] + (u_scaled[t] if u_scaled.ndim == 1 else u_scaled[:, t])
-                return u
-    else:
-        source_u_op = lambda t, u: u
+    # Velocity source: no scaling (dirichlet) or 2*c0*dt/dx (additive)
+    source_u_op = build_source_operator(
+        source.get("u_mask", 0), source.get("ux", 0), source.get("u_mode", "additive"),
+        scale_dirichlet=lambda c: 1,
+        scale_additive=lambda c: 2*c*dt/dx)
 
     return source_p_op, source_u_op
-
 
 def _build_absorption_ops(medium, k, rho0, xp):
     """Build absorption and dispersion operators for power-law attenuation."""
     alpha_coeff = medium.get("alpha_coeff", 0)
     alpha_power = medium.get("alpha_power", 1.5)
 
-    # Handle scalar or array alpha_coeff
-    is_zero = np.all(alpha_coeff == 0) if hasattr(alpha_coeff, '__len__') else alpha_coeff == 0
-    if is_zero:
+    if not _is_nonzero(alpha_coeff):
         return lambda duxdx: 0, lambda rho: 0
 
-    # Convert dB/(MHz^y cm) to Nepers/((rad/s)^y m)
+    # Convert from dB/(MHz^y cm) to Nepers/((rad/s)^y m)
     alpha_np = 100 * alpha_coeff * (1e-6 / (2 * np.pi))**alpha_power / (20 * np.log10(np.e))
+    c0 = xp.atleast_1d(xp.array(medium.get("sound_speed", medium.get("c0"))))
 
-    # Get sound speed (can be array for heterogeneous media)
-    c0 = medium.get("sound_speed", medium.get("c0"))
-    if not hasattr(c0, '__len__'):
-        c0 = xp.array([c0])
-    else:
-        c0 = xp.array(c0)
+    spectral_diff = lambda f, op: xp.real(xp.fft.ifft(op * xp.fft.fft(f)))
 
-    # Get reference sound speed for k-space operators (use max for heterogeneous)
-    c_ref = float(xp.max(c0))
-
-    # Stokes absorption (alpha_power = 2) - special case, no fractional Laplacian
+    # Stokes absorption (y=2): simple viscous damping, no fractional Laplacian needed
     if abs(alpha_power - 2.0) < 1e-10:
-        absorb_tau = -2 * alpha_np * c0
-        return lambda duxdx: absorb_tau * rho0 * duxdx, lambda rho: 0
+        tau = -2 * alpha_np * c0
+        return lambda duxdx: tau * rho0 * duxdx, lambda rho: 0
 
-    # General power-law absorption - uses fractional Laplacian
-    absorb_tau = -2 * alpha_np * c0**(alpha_power - 1)
-    absorb_eta = 2 * alpha_np * c0**alpha_power * xp.tan(np.pi * alpha_power / 2)
+    # General power-law: requires fractional Laplacian for causality
+    tau = -2 * alpha_np * c0**(alpha_power - 1)
+    eta = 2 * alpha_np * c0**alpha_power * xp.tan(np.pi * alpha_power / 2)
 
-    # Fractional Laplacian operators in k-space
-    # MATLAB uses fftshift(k) for computing, so match that:
-    # 1. Shift k to centered format
-    # 2. Compute power
-    # 3. Shift back to FFT ordering
-    k_shifted = xp.fft.fftshift(k)
-    k_mag = xp.abs(k_shifted)
+    def fractional_laplacian(power):
+        """Compute |k|^power with proper handling of k=0 singularity."""
+        k_mag = xp.abs(xp.fft.fftshift(k))
+        op = xp.where(xp.isinf(k_mag**power), 0, k_mag**power)
+        return xp.fft.ifftshift(op)
 
-    absorb_nabla1 = k_mag**(alpha_power - 2)
-    absorb_nabla1 = xp.where(xp.isinf(absorb_nabla1), 0, absorb_nabla1)
-    absorb_nabla1 = xp.fft.ifftshift(absorb_nabla1)
+    nabla1 = fractional_laplacian(alpha_power - 2)
+    nabla2 = fractional_laplacian(alpha_power - 1)
 
-    absorb_nabla2 = k_mag**(alpha_power - 1)
-    absorb_nabla2 = xp.where(xp.isinf(absorb_nabla2), 0, absorb_nabla2)
-    absorb_nabla2 = xp.fft.ifftshift(absorb_nabla2)
-
-    def diff_k(f, nabla_op):
-        return xp.real(xp.fft.ifft(nabla_op * xp.fft.fft(f)))
-
-    absorption = lambda duxdx: absorb_tau * diff_k(rho0 * duxdx, absorb_nabla1)
-    dispersion = lambda rho: absorb_eta * diff_k(rho, absorb_nabla2)
+    absorption = lambda duxdx: tau * spectral_diff(rho0 * duxdx, nabla1)
+    dispersion = lambda rho: eta * spectral_diff(rho, nabla2)
 
     return absorption, dispersion
 
 def interop_sanity(arr):
-    """Verify MATLAB/Python data layout."""
+    """Verify MATLAB/Python data layout (for testing)."""
     a = np.array(arr, copy=True)
     a[0, 1] = 99
     return a
-
-def _cpu(x): return x.get() if hasattr(x, "get") else x
