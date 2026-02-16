@@ -93,17 +93,12 @@ def simulate(kgrid, medium, source, sensor, backend="auto"):
             p, rho = p0_initial.copy(), p0_initial / c0**2
             u = (dt / (2 * rho0_sgx)) * spectral_diff(p, op_grad)
 
-        # Debug CI issue: detailed mask analysis
-        p_masked = p[mask]
-        if p_masked.shape[0] != sensor_data.shape[0]:
-            raise ValueError(
-                f"Shape mismatch at t={t}: p[mask].shape={p_masked.shape}, "
-                f"sensor_data[:,t].shape={sensor_data[:,t].shape}, "
-                f"sum(mask)={int(xp.sum(mask))}, mask.dtype={mask.dtype}, "
-                f"mask.shape={mask.shape}, p.shape={p.shape}, "
-                f"mask[:10]={mask[:10]}, mask[-10:]={mask[-10:]}"
-            )
-        sensor_data[:, t] = p_masked
+        # Debug: always print at t=0 to see mask state
+        if t == 0:
+            print(f"DEBUG t=0: mask.shape={mask.shape}, mask.dtype={mask.dtype}, "
+                  f"sum(mask)={int(xp.sum(mask))}, sensor_data.shape={sensor_data.shape}, "
+                  f"p.shape={p.shape}")
+        sensor_data[:, t] = p[mask]
 
     return {"sensor_data": _to_cpu(sensor_data), "pressure": _to_cpu(p)}
 
