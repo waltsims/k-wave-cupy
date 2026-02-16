@@ -22,7 +22,10 @@ toPy = @(x) py.numpy.array(castForPy(x), pyargs('order', 'F'));
 val  = @(s,n,d) toPy(getField(s, n, d));
 
 k_py = py.dict(pyargs('Nx',int64(kgrid.Nx), 'dx',kgrid.dx, 'Nt',int64(kgrid.Nt), 'dt',kgrid.dt));
-m_py = py.dict(pyargs('sound_speed', val(medium,{'sound_speed','c0'},[]), 'density', val(medium,{'density','rho0'},1000)));
+m_py = py.dict(pyargs('sound_speed', val(medium,{'sound_speed','c0'},[]), ...
+                       'density', val(medium,{'density','rho0'},1000), ...
+                       'alpha_coeff', val(medium,{'alpha_coeff'},0), ...
+                       'alpha_power', val(medium,{'alpha_power'},1.5)));
 s_py = py.dict(pyargs('p0', val(source,{'p0'},0)));
 d_py = py.dict(pyargs('mask', val(sensor,{'mask'},1)));
 

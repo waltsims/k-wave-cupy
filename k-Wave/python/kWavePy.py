@@ -116,7 +116,9 @@ def _build_absorption_ops(medium, k, rho0, xp):
     alpha_coeff = medium.get("alpha_coeff", 0)
     alpha_power = medium.get("alpha_power", 1.5)
 
-    if alpha_coeff == 0:
+    # Handle scalar or array alpha_coeff
+    is_zero = np.all(alpha_coeff == 0) if hasattr(alpha_coeff, '__len__') else alpha_coeff == 0
+    if is_zero:
         return lambda duxdx: 0, lambda rho: 0
 
     # Convert dB/(MHz^y cm) to Nepers/((rad/s)^y m)
