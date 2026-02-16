@@ -78,6 +78,7 @@ jobs:
 
       - name: Set up Python
         uses: actions/setup-python@v5
+        id: setup-python
         with:
           python-version: '3.10'
 
@@ -85,6 +86,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install numpy
+          echo "PYTHON_PATH=${{ steps.setup-python.outputs.python-path }}" >> $GITHUB_ENV
 
       - name: Set up MATLAB
         uses: matlab-actions/setup-matlab@v2
@@ -100,11 +102,12 @@ jobs:
 
       - name: Run unit tests (1D with Python backend)
         uses: matlab-actions/run-command@v2
+        env:
+          PYTHON_PATH: ${{ steps.setup-python.outputs.python-path }}
         with:
           command: |
-            % Configure Python environment (use setup-python's path)
-            [~, py_path] = system('which python3');
-            py_path = strtrim(py_path);
+            % Configure Python environment using path from setup-python action
+            py_path = getenv('PYTHON_PATH');
             disp(['Using Python at: ' py_path]);
             pyenv('Version', py_path);
             disp(['Python version: ' char(py.sys.version)]);
