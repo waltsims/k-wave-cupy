@@ -1,238 +1,468 @@
 """
-Minimal k-Wave Python Backend.
+Minimal N-D k-Wave Python Backend.
+Supports 1D, 2D, and 3D k-space pseudospectral wave propagation.
+
+Design: Simulation class with setup/step separation for debuggability.
 """
 import numpy as np
 from types import SimpleNamespace
 try: import cupy as cp
 except ImportError: cp = None
 
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
+# Graceful attribute access for optional MATLAB struct fields
 def _attr(obj, name, default=None):
-    """Get attribute with default (works for objects and SimpleNamespace)."""
     return getattr(obj, name, default)
 
+# Zero arrays/scalars from MATLAB indicate "disabled" features
 def _is_enabled(x):
-    """Check if parameter is nonzero/active (handles scalars and arrays)."""
     return x is not None and not (np.all(x == 0) if hasattr(x, '__len__') else x == 0)
 
 def _to_cpu(x):
-    """Move CuPy array to CPU if needed."""
     return x.get() if hasattr(x, "get") else x
 
-def _expand_to_grid(val, Nx, xp, name="parameter"):
-    """Expand scalar or array to match grid length Nx."""
+def _expand_to_grid(val, grid_shape, xp, name="parameter"):
     if val is None: raise ValueError(f"Missing required parameter: {name}")
     arr = xp.array(val, dtype=float).flatten(order="F")
-    if arr.size == 1: return xp.full(Nx, float(arr[0]), dtype=float)
-    if arr.size == Nx: return arr
-    raise ValueError(f"{name} length {arr.size} incompatible with grid size {Nx}")
+    grid_size = int(np.prod(grid_shape))
+    if arr.size == 1: return xp.full(grid_shape, float(arr[0]), dtype=float)
+    if arr.size == grid_size: return arr.reshape(grid_shape, order="F")
+    raise ValueError(f"{name} size {arr.size} incompatible with grid size {grid_size}")
 
-def _spectral_diff(f, op, xp):
-    """Apply spectral operator: F^-1[op * F[f]] (core k-space method)."""
-    return xp.real(xp.fft.ifft(op * xp.fft.fft(f)))
+# =============================================================================
+# Simulation Class
+# =============================================================================
 
-def _fractional_laplacian(k, power, xp):
-    """Fractional Laplacian |k|^power in k-space (zero at DC to avoid singularity)."""
-    k_mag = xp.abs(xp.fft.fftshift(k))
-    return xp.fft.ifftshift(xp.where(k_mag == 0, 0, k_mag**power))
+class Simulation:
+    """N-D k-Space Pseudospectral Wave Propagator with setup/step separation.
 
-def _parse_inputs(kgrid, medium, sensor, xp):
-    """Parse and validate simulation inputs, expanding scalars to grid arrays."""
-    Nx, dx = int(kgrid.Nx), float(kgrid.dx)
-    Nt, dt = int(kgrid.Nt), float(kgrid.dt)
+    Usage:
+        sim = Simulation(kgrid, medium, source, sensor)
+        sim.setup()                    # Inspect sim.p, sim.op_grad_list, etc.
+        sim.step()                     # One time step, inspect fields
+        results = sim.run()            # Run remaining steps, return results
 
-    c0   = _expand_to_grid(medium.sound_speed, Nx, xp, "sound_speed")
-    rho0 = _expand_to_grid(_attr(medium, 'density', 1000.0), Nx, xp, "density")
-
-    mask_raw = _attr(sensor, 'mask', None)
-    if mask_raw is None:
-        mask = xp.ones(Nx, dtype=bool)
-    else:
-        mask = xp.array(mask_raw, dtype=bool, copy=True).flatten(order="F")
-        if mask.size == 1:
-            mask = xp.full(Nx, bool(mask[0]), dtype=bool)
-    if mask.shape != (Nx,):
-        raise ValueError(f"Sensor mask shape {mask.shape} doesn't match grid size {Nx}")
-
-    return Nx, dx, Nt, dt, c0, rho0, mask
-
-def simulate(kgrid, medium, source, sensor, backend="auto"):
-    """1D k-Space Pseudospectral Wave Propagator.
-
-    Accepts objects with attributes (kWaveGrid, kWaveMedium, etc.) or SimpleNamespace.
-    For dict-based input (MATLAB interop), use simulate_from_dicts().
+    Or simply:
+        results = Simulation(kgrid, medium, source, sensor).run()
     """
-    xp = cp if cp and backend in ("auto", "gpu") else np
-    Nx, dx, Nt, dt, c0, rho0, mask = _parse_inputs(kgrid, medium, sensor, xp)
-    diff = lambda f, op: _spectral_diff(f, op, xp)
 
-    p = xp.zeros(Nx, dtype=float)
+    def __init__(self, kgrid, medium, source, sensor, backend="auto"):
+        self.kgrid = kgrid
+        self.medium = medium
+        self.source = source
+        self.sensor = sensor
+        self.xp = cp if cp and backend in ("auto", "gpu") else np
+        self._is_setup = False
+        self.t = 0  # Current time step
 
-    # Density at staggered grid points (x + dx/2) for velocity update
-    rho0_staggered = xp.concatenate([0.5 * (rho0[:-1] + rho0[1:]), rho0[-1:]]) if rho0.size > 1 else rho0
+    def setup(self):
+        """Initialize operators and fields. Call before step()/run()."""
+        xp = self.xp
 
-    # Warn if simulation will be unstable
-    cfl = float(xp.max(c0) * dt / dx)
-    if cfl > 1.0: print(f"Warning: Unstable CFL condition: {cfl:.2f} > 1.0")
+        # Parse grid dimensions
+        self.dims, self.spacing = [], []
+        for axis in ['x', 'y', 'z']:
+            N = _attr(self.kgrid, f'N{axis}', None)
+            d = _attr(self.kgrid, f'd{axis}', None)
+            if N is not None and d is not None:
+                self.dims.append(int(N))
+                self.spacing.append(float(d))
+            else:
+                break
 
-    # k-space operators with time-staggering correction (sinc factor)
-    c_ref, k = float(xp.max(c0)), 2 * np.pi * xp.fft.fftfreq(Nx, d=dx)
-    kappa, source_kappa = xp.sinc((c_ref * k * dt / 2) / np.pi), xp.cos(c_ref * k * dt / 2)
-    op_grad = 1j * k * kappa * xp.exp( 1j * k * dx/2)  # Gradient with forward shift
-    op_div  = 1j * k * kappa * xp.exp(-1j * k * dx/2)  # Divergence with backward shift
+        self.grid_shape = tuple(self.dims)
+        self.ndim = len(self.dims)
+        self.Nt = int(self.kgrid.Nt)
+        self.dt = float(self.kgrid.dt)
 
-    # Physics operators return 0 or identity when feature is disabled
-    absorption, dispersion, nonlinearity, nonlinear_factor = _build_physics_ops(medium, k, rho0, Nx, xp)
-    source_p_op, source_u_op = _build_source_ops(source, c0, dt, dx, Nx, source_kappa, xp)
+        # Medium properties
+        self.c0 = _expand_to_grid(self.medium.sound_speed, self.grid_shape, xp, "sound_speed")
+        self.rho0 = _expand_to_grid(_attr(self.medium, 'density', 1000.0), self.grid_shape, xp, "density")
+        self.c_ref = float(xp.max(self.c0))
 
-    # Initial pressure source (applied at t=0, overriding computed values)
-    p0_raw = _attr(source, 'p0', 0)
-    p0_initial = xp.array(p0_raw, dtype=float).flatten(order="F") if _is_enabled(p0_raw) else None
+        # CFL check
+        cfl = self.c_ref * self.dt / min(self.spacing)
+        if cfl > 1.0: print(f"Warning: Unstable CFL={cfl:.2f}")
 
-    u, rho = xp.zeros_like(p), xp.zeros_like(p)
-    sensor_data = xp.zeros((int(xp.sum(mask)), Nt), dtype=p.dtype)
+        # Sensor mask
+        self._setup_sensor_mask()
 
-    # Initialize velocity at t=-dt/2 for leapfrog staggering
-    u += (dt / (2 * rho0_staggered)) * diff(p, op_grad)
+        # PML (Perfectly Matched Layer)
+        self._setup_pml()
 
-    for t in range(Nt):
-        # Momentum equation: du/dt = -grad(p)/rho
-        u -= (dt / rho0_staggered) * diff(p, op_grad)
-        u = source_u_op(t, u)
+        # K-space operators (one per dimension)
+        self._setup_kspace_operators()
 
-        # Mass conservation: drho/dt = -rho0 * div(u) * nonlinear_factor
-        duxdx = diff(u, op_div)
-        rho -= (dt * rho0) * duxdx * nonlinear_factor(rho)
-        rho = source_p_op(t, rho)
+        # Physics operators
+        self._setup_physics_operators()
 
-        # Equation of state with absorption/dispersion/nonlinearity
-        p = c0**2 * (rho + absorption(duxdx) - dispersion(rho) + nonlinearity(rho))
+        # Source operators
+        self._setup_source_operators()
 
-        # For source.p0: override computed values at t=0 (MATLAB convention)
-        if t == 0 and p0_initial is not None:
-            p, rho = p0_initial.copy(), p0_initial / c0**2
-            u = (dt / (2 * rho0_staggered)) * diff(p, op_grad)
+        # Initialize fields
+        self._setup_fields()
 
-        sensor_data[:, t] = p[mask]
+        self._is_setup = True
+        return self
 
-    return {"sensor_data": _to_cpu(sensor_data), "pressure": _to_cpu(p)}
+    def _setup_sensor_mask(self):
+        xp = self.xp
+        mask_raw = _attr(self.sensor, 'mask', None)
+        if mask_raw is None:
+            self.mask = xp.ones(self.grid_shape, dtype=bool)
+        else:
+            self.mask = xp.array(mask_raw, dtype=bool, copy=True).flatten(order="F")
+            if self.mask.size == 1:
+                self.mask = xp.full(self.grid_shape, bool(self.mask[0]), dtype=bool)
+            else:
+                self.mask = self.mask.reshape(self.grid_shape, order="F")
+        self.n_sensor_points = int(xp.sum(self.mask))
 
-def _build_physics_ops(medium, k, rho0, Nx, xp):
-    """Build composable physics operators (return 0/identity when disabled)."""
-    absorption, dispersion = _build_absorption_ops(medium, k, rho0, Nx, xp)
+        # MATLAB uses 1-based indexing; convert to Python's 0-based for array slicing
+        record_start_raw = _attr(self.sensor, 'record_start_index', 1)
+        self.record_start_index = int(record_start_raw) - 1
+        self.num_recorded_time_points = self.Nt - self.record_start_index
 
-    BonA_raw = _attr(medium, 'BonA', 0)
-    if not _is_enabled(BonA_raw):
-        # (absorption, dispersion, nonlinearity, nonlinear_factor)
-        return absorption, dispersion, lambda rho: 0, lambda rho: 1.0
+    def _setup_pml(self):
+        """Build Perfectly Matched Layer absorption operators for each dimension."""
+        xp = self.xp
+        axis_names = ['x', 'y', 'z']
 
-    # Nonlinear acoustics: pressure depends on rho^2
-    BonA = _expand_to_grid(BonA_raw, Nx, xp, "BonA")
-    # (absorption, dispersion, nonlinearity, nonlinear_factor)
-    return (absorption, dispersion,
-            lambda rho: BonA * rho**2 / (2 * rho0),
-            lambda rho: (2*rho + rho0) / rho0)
+        self.pml_list = []      # For pressure/density
+        self.pml_sg_list = []   # For velocity (staggered grid)
 
-def _build_source_ops(source, c0, dt, dx, Nx, source_kappa, xp):
-    """Build time-varying source operators for pressure and velocity."""
+        for axis in range(self.ndim):
+            N = self.dims[axis]
+            dx = self.spacing[axis]
+            name = axis_names[axis]
 
-    def build_op(mask_raw, signal_raw, mode, scale_dirichlet, scale_additive):
-        if not (_is_enabled(mask_raw) and _is_enabled(signal_raw)):
-            return lambda t, field: field
+            pml_size = int(_attr(self.kgrid, f'pml_size_{name}', 0))
+            pml_alpha = float(_attr(self.kgrid, f'pml_alpha_{name}', 0))
 
-        mask = xp.array(mask_raw, dtype=bool).flatten(order="F")
-        signal = xp.array(signal_raw, dtype=float).flatten(order="F")
-        c0_src = c0[mask] if c0.size > 1 else c0
-        scaled = signal / scale_dirichlet(c0_src) if mode == "dirichlet" else signal * scale_additive(c0_src)
-        get_val = lambda t: scaled[t] if scaled.ndim == 1 else scaled[:, t]
+            if pml_size == 0 or pml_alpha == 0:
+                # No PML for this dimension - use identity (multiply by 1)
+                shape = [1] * self.ndim
+                shape[axis] = N
+                self.pml_list.append(xp.ones(shape, dtype=float))
+                self.pml_sg_list.append(xp.ones(shape, dtype=float))
+            else:
+                # Build PML profile: exp(-alpha * (c/dx) * (x/pml_size)^4 * dt/2)
+                x = xp.arange(1, pml_size + 1, dtype=float)
 
-        def dirichlet(t, field):
-            if t < len(scaled): field[mask] = get_val(t)
-            return field
+                # Regular grid (for pressure/density)
+                pml_left = pml_alpha * (self.c_ref / dx) * ((x - pml_size - 1) / (-pml_size))**4
+                pml_right = pml_alpha * (self.c_ref / dx) * (x / pml_size)**4
 
-        def additive(t, field):
-            if t >= len(scaled): return field
-            src = xp.zeros(Nx, dtype=field.dtype)
-            src[mask] = get_val(t)
-            return field + xp.real(xp.fft.ifft(source_kappa * xp.fft.fft(src)))
+                # Staggered grid (for velocity)
+                pml_left_sg = pml_alpha * (self.c_ref / dx) * ((x + 0.5 - pml_size - 1) / (-pml_size))**4
+                pml_right_sg = pml_alpha * (self.c_ref / dx) * ((x + 0.5) / pml_size)**4
 
-        def additive_raw(t, field):
-            if t < len(scaled): field[mask] += get_val(t)
-            return field
+                # Exponentiate
+                pml_left = xp.exp(-pml_left * self.dt / 2)
+                pml_right = xp.exp(-pml_right * self.dt / 2)
+                pml_left_sg = xp.exp(-pml_left_sg * self.dt / 2)
+                pml_right_sg = xp.exp(-pml_right_sg * self.dt / 2)
 
-        return {"dirichlet": dirichlet, "additive": additive}.get(mode, additive_raw)
+                # Assemble full PML profile (1 in interior)
+                pml = xp.ones(N, dtype=float)
+                pml[:pml_size] = pml_left
+                pml[-pml_size:] = pml_right
 
-    # Pressure: dirichlet divides by c^2, additive multiplies by 2*dt/(c*dx)
-    source_p_op = build_op(
-        _attr(source, 'p_mask', 0), _attr(source, 'p', 0), _attr(source, 'p_mode', 'additive'),
-        lambda c: c**2, lambda c: 2*dt/(c*dx))
+                pml_sg = xp.ones(N, dtype=float)
+                pml_sg[:pml_size] = pml_left_sg
+                pml_sg[-pml_size:] = pml_right_sg
 
-    # Velocity: dirichlet unchanged, additive multiplies by 2*c*dt/dx
-    source_u_op = build_op(
-        _attr(source, 'u_mask', 0), _attr(source, 'ux', 0), _attr(source, 'u_mode', 'additive'),
-        lambda c: 1, lambda c: 2*c*dt/dx)
+                # Reshape for broadcasting
+                shape = [1] * self.ndim
+                shape[axis] = N
+                self.pml_list.append(pml.reshape(shape))
+                self.pml_sg_list.append(pml_sg.reshape(shape))
 
-    return source_p_op, source_u_op
+    def _setup_kspace_operators(self):
+        """Build k-space gradient/divergence operators for each dimension."""
+        xp = self.xp
+        self.k_list = []
 
-def _build_absorption_ops(medium, k, rho0, Nx, xp):
-    """Build absorption and dispersion operators for power-law attenuation."""
-    alpha_coeff_raw = _attr(medium, 'alpha_coeff', 0)
-    if not _is_enabled(alpha_coeff_raw):
-        return lambda duxdx: 0, lambda rho: 0
+        # First pass: build k-vectors for each dimension
+        for axis, (N, dx) in enumerate(zip(self.dims, self.spacing)):
+            k = 2 * np.pi * xp.fft.fftfreq(N, d=dx)
+            shape = [1] * self.ndim
+            shape[axis] = N
+            self.k_list.append(k.reshape(shape))
 
-    alpha_coeff = _expand_to_grid(alpha_coeff_raw, Nx, xp, "alpha_coeff")
-    c0 = _expand_to_grid(medium.sound_speed, Nx, xp, "sound_speed")
-    alpha_power = float(xp.array(_attr(medium, 'alpha_power', 1.5), dtype=float).flatten(order="F")[0])
+        # K-magnitude must be computed from all dimensions to preserve isotropy in k-space
+        k_mag_sq = self.k_list[0]**2
+        for k in self.k_list[1:]:
+            k_mag_sq = k_mag_sq + k**2
+        k_mag = xp.sqrt(k_mag_sq)
 
-    # Convert from dB/(MHz^y cm) to Nepers/((rad/s)^y m)
-    alpha_np = 100 * alpha_coeff * (1e-6 / (2 * np.pi))**alpha_power / (20 * np.log10(np.e))
-    diff = lambda f, op: _spectral_diff(f, op, xp)
+        # Single kappa from k-magnitude ensures correct dispersion relation in N-D
+        self.kappa = xp.sinc((self.c_ref * k_mag * self.dt / 2) / np.pi)
 
-    # Stokes absorption (y=2): simple viscous damping, no fractional Laplacian needed
-    is_stokes_absorption = abs(alpha_power - 2.0) < 1e-10
-    if is_stokes_absorption:
-        return lambda duxdx: -2 * alpha_np * c0 * rho0 * duxdx, lambda rho: 0
+        # Source kappa: cos instead of sinc
+        self.source_kappa = xp.cos(self.c_ref * k_mag * self.dt / 2)
 
-    # General power-law: requires fractional Laplacian for causality
-    tau, eta = -2 * alpha_np * c0**(alpha_power - 1), 2 * alpha_np * c0**alpha_power * xp.tan(np.pi * alpha_power / 2)
-    nabla1 = _fractional_laplacian(k, alpha_power - 2, xp)
-    nabla2 = _fractional_laplacian(k, alpha_power - 1, xp)
+        # Per-dimension operators handle staggered grid shifts; kappa applied globally
+        self.op_grad_list = []
+        self.op_div_list = []
+        for axis, (N, dx) in enumerate(zip(self.dims, self.spacing)):
+            k = self.k_list[axis]
+            self.op_grad_list.append(1j * k * xp.exp( 1j * k * dx/2))
+            self.op_div_list.append(1j * k * xp.exp(-1j * k * dx/2))
 
-    return (lambda duxdx: tau * diff(rho0 * duxdx, nabla1),
-            lambda rho: eta * diff(rho, nabla2))
+    def _setup_physics_operators(self):
+        """Build absorption, dispersion, and nonlinearity operators."""
+        xp = self.xp
+
+        # Absorption/dispersion
+        alpha_coeff_raw = _attr(self.medium, 'alpha_coeff', 0)
+        if not _is_enabled(alpha_coeff_raw):
+            self._absorption = lambda div_u: 0
+            self._dispersion = lambda rho: 0
+        else:
+            alpha_coeff = _expand_to_grid(alpha_coeff_raw, self.grid_shape, xp, "alpha_coeff")
+            alpha_power = float(xp.array(_attr(self.medium, 'alpha_power', 1.5)).flatten()[0])
+            alpha_np = 100 * alpha_coeff * (1e-6 / (2 * np.pi))**alpha_power / (20 * np.log10(np.e))
+
+            if abs(alpha_power - 2.0) < 1e-10:  # Stokes
+                self._absorption = lambda div_u: -2 * alpha_np * self.c0 * self.rho0 * div_u
+                self._dispersion = lambda rho: 0
+            else:  # Power-law with fractional Laplacian
+                tau = -2 * alpha_np * self.c0**(alpha_power - 1)
+                eta = 2 * alpha_np * self.c0**alpha_power * xp.tan(np.pi * alpha_power / 2)
+                nabla1 = self._fractional_laplacian(alpha_power - 2)
+                nabla2 = self._fractional_laplacian(alpha_power - 1)
+                # Fractional Laplacian already includes full k-space structure; no kappa needed
+                self._absorption = lambda div_u: tau * self._diff(self.rho0 * div_u, nabla1, apply_kappa=False)
+                self._dispersion = lambda rho: eta * self._diff(rho, nabla2, apply_kappa=False)
+
+        # Nonlinearity
+        BonA_raw = _attr(self.medium, 'BonA', 0)
+        if not _is_enabled(BonA_raw):
+            self._nonlinearity = lambda rho: 0
+            self._nonlinear_factor = lambda rho: 1.0
+        else:
+            BonA = _expand_to_grid(BonA_raw, self.grid_shape, xp, "BonA")
+            self._nonlinearity = lambda rho: BonA * rho**2 / (2 * self.rho0)
+            self._nonlinear_factor = lambda rho: (2*rho + self.rho0) / self.rho0
+
+    def _setup_source_operators(self):
+        """Build time-varying source operators."""
+        xp = self.xp
+        dx = self.spacing[0]
+        grid_size = int(np.prod(self.grid_shape))
+
+        def build_op(mask_raw, signal_raw, mode, scale_dirichlet, scale_additive, is_pressure=False):
+            if not (_is_enabled(mask_raw) and _is_enabled(signal_raw)):
+                return (lambda t, field, dim: field) if is_pressure else (lambda t, field: field)
+
+            mask = xp.array(mask_raw, dtype=bool).flatten(order="F")
+            if mask.size == 1:
+                mask = xp.full(self.grid_shape, bool(mask[0]), dtype=bool).flatten(order="F")
+            n_src = int(xp.sum(mask))
+
+            # Handle signal: can be 1D (Nt,) or 2D (n_src, Nt)
+            signal_arr = xp.array(signal_raw, dtype=float, order="F")
+            if signal_arr.ndim == 1:
+                # 1D signal: same value for all source points, reshape to (1, Nt)
+                signal = signal_arr.reshape(1, -1)
+                signal_len = signal.shape[1]
+            else:
+                # 2D signal: (n_src, Nt) in Fortran order
+                signal = signal_arr.reshape(-1, signal_arr.shape[-1], order="F") if signal_arr.ndim > 2 else signal_arr
+                signal_len = signal.shape[1]
+
+            # Scale factor depends on mode
+            c0_flat = self.c0.flatten(order="F")
+            c0_src = c0_flat[mask] if c0_flat.size > 1 else xp.full(n_src, float(c0_flat))
+            if mode == "dirichlet":
+                scale = 1.0 / scale_dirichlet(c0_src)
+            else:
+                scale = scale_additive(c0_src)
+            # Ensure scale is an array for consistent handling
+            scale = xp.atleast_1d(xp.asarray(scale))
+
+            def get_val(t):
+                if signal.shape[0] == 1:
+                    return xp.full(n_src, float(signal[0, t])) * scale
+                return signal[:, t] * scale
+
+            def dirichlet(t, field):
+                if t >= signal_len: return field
+                flat = field.flatten(order="F")
+                flat[mask] = get_val(t)
+                return flat.reshape(self.grid_shape, order="F")
+
+            def additive(t, field):
+                if t >= signal_len: return field
+                src = xp.zeros(grid_size, dtype=field.dtype)
+                src[mask] = get_val(t)
+                src = src.reshape(self.grid_shape, order="F")
+                return field + self._diff(src, self.source_kappa, apply_kappa=False)
+
+            def additive_raw(t, field):
+                if t >= signal_len: return field
+                flat = field.flatten(order="F")
+                flat[mask] += get_val(t)
+                return flat.reshape(self.grid_shape, order="F")
+
+            base = {"dirichlet": dirichlet, "additive": additive}.get(mode, additive_raw)
+            return (lambda t, field, dim: base(t, field) if dim == 0 else field) if is_pressure else base
+
+        self._source_p_op = build_op(
+            _attr(self.source, 'p_mask', 0), _attr(self.source, 'p', 0),
+            _attr(self.source, 'p_mode', 'additive'),
+            lambda c: c**2, lambda c: 2*self.dt/(c*dx), is_pressure=True)
+
+        self._source_u_ops = []
+        for i, vel in enumerate(['ux', 'uy', 'uz'][:self.ndim]):
+            self._source_u_ops.append(build_op(
+                _attr(self.source, 'u_mask', 0), _attr(self.source, vel, 0),
+                _attr(self.source, 'u_mode', 'additive'),
+                lambda c: 1, lambda c: 2*c*self.dt/dx))
+
+    def _setup_fields(self):
+        """Initialize pressure, velocity, and density fields."""
+        xp = self.xp
+
+        self.p = xp.zeros(self.grid_shape, dtype=float)
+        self.u = [xp.zeros(self.grid_shape, dtype=float) for _ in range(self.ndim)]
+        # Split density per dimension enables independent PML absorption in each direction
+        self.rho_split = [xp.zeros(self.grid_shape, dtype=float) for _ in range(self.ndim)]
+
+        # Staggered density for each dimension
+        self.rho0_staggered = [self._stagger(self.rho0, axis) for axis in range(self.ndim)]
+
+        # Sensor data storage (sized based on record_start_index)
+        self.sensor_data = xp.zeros((self.n_sensor_points, self.num_recorded_time_points), dtype=float)
+
+        # Initial pressure source (p0)
+        p0_raw = _attr(self.source, 'p0', 0)
+        self._p0_initial = _expand_to_grid(p0_raw, self.grid_shape, xp, "p0") if _is_enabled(p0_raw) else None
+
+        # Initialize velocity at t=-dt/2 for leapfrog
+        for i in range(self.ndim):
+            self.u[i] += (self.dt / (2 * self.rho0_staggered[i])) * self._diff(self.p, self.op_grad_list[i])
+
+    def step(self):
+        """Advance simulation by one time step. Returns self for chaining."""
+        if not self._is_setup:
+            self.setup()
+        if self.t >= self.Nt:
+            return self
+
+        xp = self.xp
+
+        # Momentum equation: du_i/dt = -grad_i(p)/rho, with PML
+        for i in range(self.ndim):
+            pml_sg = self.pml_sg_list[i]
+            # Double PML application implements second-order absorption (split-field PML)
+            self.u[i] = pml_sg * (pml_sg * self.u[i]
+                - (self.dt / self.rho0_staggered[i]) * self._diff(self.p, self.op_grad_list[i]))
+            self.u[i] = self._source_u_ops[i](self.t, self.u[i])
+
+        # Mass conservation: drho_i/dt = -rho0 * div_i(u_i), with PML
+        rho_total = sum(self.rho_split)
+        div_u_components = []
+        for i in range(self.ndim):
+            pml = self.pml_list[i]
+            div_u_i = self._diff(self.u[i], self.op_div_list[i])
+            div_u_components.append(div_u_i)
+            # Double PML application implements second-order absorption (split-field PML)
+            self.rho_split[i] = pml * (pml * self.rho_split[i]
+                - self.dt * self.rho0 * div_u_i * self._nonlinear_factor(rho_total))
+            self.rho_split[i] = self._source_p_op(self.t, self.rho_split[i], i)
+
+        # Equation of state
+        rho_total = sum(self.rho_split)
+        div_u_total = sum(div_u_components)
+        self.p = self.c0**2 * (rho_total + self._absorption(div_u_total)
+                               - self._dispersion(rho_total) + self._nonlinearity(rho_total))
+
+        # Initial pressure must override equation of state to inject p0 at t=0
+        if self.t == 0 and self._p0_initial is not None:
+            self.p = self._p0_initial.copy()
+            for i in range(self.ndim):
+                self.rho_split[i] = self._p0_initial / (self.c0**2 * self.ndim)
+                self.u[i] = (self.dt / (2 * self.rho0_staggered[i])) * self._diff(self.p, self.op_grad_list[i])
+
+        # Record sensor data (only if past record_start_index)
+        if self.t >= self.record_start_index:
+            file_index = self.t - self.record_start_index
+            self.sensor_data[:, file_index] = self.p[self.mask]
+        self.t += 1
+        return self
+
+    def run(self):
+        """Run simulation to completion. Returns results dict."""
+        if not self._is_setup:
+            self.setup()
+        while self.t < self.Nt:
+            self.step()
+        return {"sensor_data": _to_cpu(self.sensor_data), "pressure": _to_cpu(self.p)}
+
+    # Helper methods
+    def _diff(self, f, op, apply_kappa=True):
+        """Spectral differentiation: F^-1[op * kappa * F[f]]."""
+        xp = self.xp
+        kappa = self.kappa if apply_kappa else 1
+        if self.ndim == 1: return xp.real(xp.fft.ifft(op * kappa * xp.fft.fft(f)))
+        if self.ndim == 2: return xp.real(xp.fft.ifft2(op * kappa * xp.fft.fft2(f)))
+        return xp.real(xp.fft.ifftn(op * kappa * xp.fft.fftn(f)))
+
+    def _stagger(self, arr, axis):
+        """Compute staggered grid values (average neighbors along axis)."""
+        if arr.size == 1: return arr
+        xp = self.xp
+        lo = [slice(None)] * arr.ndim
+        hi = [slice(None)] * arr.ndim
+        lo[axis], hi[axis] = slice(None, -1), slice(1, None)
+        avg = 0.5 * (arr[tuple(lo)] + arr[tuple(hi)])
+        last = [slice(None)] * arr.ndim
+        last[axis] = slice(-1, None)
+        return xp.concatenate([avg, arr[tuple(last)]], axis=axis)
+
+    def _fractional_laplacian(self, power):
+        """N-D fractional Laplacian |k|^power."""
+        xp = self.xp
+        k_mag_sq = sum(xp.fft.fftshift(k)**2 for k in self.k_list)
+        k_mag = xp.sqrt(k_mag_sq)
+        return xp.fft.ifftshift(xp.where(k_mag == 0, 0, k_mag**power))
 
 # =============================================================================
 # MATLAB Interop
 # =============================================================================
 
-def simulate_from_dicts(kgrid, medium, source, sensor, backend="auto"):
-    """MATLAB interop entry point - converts dicts to namespace objects.
+def _to_namespace(d):
+    """Convert dict to SimpleNamespace."""
+    return SimpleNamespace(**dict(d))
 
-    Handles field name aliases (c0 -> sound_speed, rho0 -> density) and
-    provides defaults for optional parameters.
-    """
-    def to_namespace(d):
-        return SimpleNamespace(**dict(d))
+# MATLAB code uses both c0/sound_speed and rho0/density; normalize to canonical names
+def _normalize_medium(m):
+    d = dict(m)
+    if 'c0' in d and 'sound_speed' not in d: d['sound_speed'] = d.pop('c0')
+    if 'rho0' in d and 'density' not in d: d['density'] = d.pop('rho0')
+    return d
 
-    def normalize_medium(m):
-        """Normalize field names and apply defaults."""
-        d = dict(m)
-        # Aliases: legacy k-Wave names -> canonical names
-        if 'c0' in d and 'sound_speed' not in d:
-            d['sound_speed'] = d.pop('c0')
-        if 'rho0' in d and 'density' not in d:
-            d['density'] = d.pop('rho0')
-        return d
-
-    return simulate(
-        to_namespace(kgrid),
-        to_namespace(normalize_medium(medium)),
-        to_namespace(source),
-        to_namespace(sensor),
+def create_simulation(kgrid, medium, source, sensor, backend="auto"):
+    """MATLAB interop: create Simulation from dicts (for step-by-step debugging)."""
+    return Simulation(
+        _to_namespace(kgrid),
+        _to_namespace(_normalize_medium(medium)),
+        _to_namespace(source),
+        _to_namespace(sensor),
         backend
     )
 
+def simulate_from_dicts(kgrid, medium, source, sensor, backend="auto"):
+    """MATLAB interop entry point."""
+    return create_simulation(kgrid, medium, source, sensor, backend).run()
+
 def interop_sanity(arr):
-    """Verify MATLAB/Python data layout (for testing)."""
+    """Verify MATLAB/Python data layout."""
     a = np.array(arr, copy=True)
     a[0, 1] = 99
     return a

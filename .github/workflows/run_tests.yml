@@ -9,8 +9,9 @@ on:
        - main
 
 jobs:
-  unit-tests-matlab:
-    name: Unit tests (MATLAB - 1D)
+  # Generate 1D reference data (needed for comprehensive 1D test)
+  generate-reference-data:
+    name: Generate 1D reference data
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,13 +22,12 @@ jobs:
           products: Signal_Processing_Toolbox
           cache: true
 
-      - name: Run 1D unit tests and generate reference data
+      - name: Generate reference data
         uses: matlab-actions/run-command@v2
         with:
           command: |
             addpath('k-Wave');
             cd('k-Wave/testing/unit');
-            runUnitTests('kspaceFirstOrder1D', false);
             kspaceFirstOrder1D_compare_plane_waves(false, false);
 
       - name: Upload reference data
@@ -36,10 +36,15 @@ jobs:
           name: reference_data
           path: k-Wave/testing/unit/kspaceFirstOrder1D_reference_data.mat
 
-  python-backend-parity:
-    name: Python backend parity (1D comprehensive)
+  # Python backend tests by dimension
+  python-backend-tests:
+    name: Python backend (${{ matrix.dim }}D)
     runs-on: ubuntu-latest
-    needs: unit-tests-matlab
+    needs: generate-reference-data
+    strategy:
+      fail-fast: false
+      matrix:
+        dim: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
 
@@ -64,19 +69,17 @@ jobs:
           name: reference_data
           path: k-Wave/testing/unit
 
-      - name: Run Python backend parity test
+      - name: Run ${{ matrix.dim }}D tests
         uses: matlab-actions/run-command@v2
         env:
           PYTHON_PATH: ${{ steps.setup-python.outputs.python-path }}
         with:
           command: |
             pyenv('Version', getenv('PYTHON_PATH'));
-            addpath('k-Wave');
-            addpath('tests/shims');
-            cd('k-Wave/testing/unit');
-            result = kspaceFirstOrder1D_compare_plane_waves(false, false);
-            if ~result
-              error('Python backend parity test failed');
+            addpath('tests');
+            results = run_tests_by_dim(${{ matrix.dim }});
+            if ~all([results.passed])
+              error('${{ matrix.dim }}D tests failed');
             end
 
   regression-tests:
