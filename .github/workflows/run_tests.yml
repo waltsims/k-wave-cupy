@@ -109,6 +109,13 @@ jobs:
             save('test_struct.mat', 'test_struct');
           startup-options: -nojvm -logfile output.log
 
+      - name: Upload MATLAB log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matlab_output_log
+          path: /tmp/run_matlab_command-*/output.log
+
       - name: Create artifact
         uses: matlab-actions/run-command@v2
         with:
