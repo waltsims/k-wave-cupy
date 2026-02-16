@@ -102,12 +102,19 @@ jobs:
         uses: matlab-actions/run-command@v2
         with:
           command: |
+            % Configure Python environment (use setup-python's path)
+            [~, py_path] = system('which python3');
+            py_path = strtrim(py_path);
+            disp(['Using Python at: ' py_path]);
+            pyenv('Version', py_path);
+            disp(['Python version: ' char(py.sys.version)]);
+            disp(['NumPy version: ' char(py.numpy.version.version)]);
             addpath('${{ github.workspace }}/k-Wave');
             addpath('${{ github.workspace }}/tests/shims');
             cd('${{ github.workspace }}/k-Wave/testing/unit');
             test_struct = runUnitTests('kspaceFirstOrder1D',false);
             save('test_struct.mat', 'test_struct');
-          startup-options: -nojvm -logfile output.log
+          startup-options: -logfile output.log
 
       - name: Upload MATLAB log
         if: always()
