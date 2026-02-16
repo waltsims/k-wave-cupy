@@ -13,6 +13,13 @@ def _to_cpu(x):
     """Move CuPy array to CPU if needed."""
     return x.get() if hasattr(x, "get") else x
 
+def _expand_to_grid(val, Nx, xp, name="parameter"):
+    """Ensure medium parameters are 1D arrays matching the grid length."""
+    arr = xp.array(val, dtype=float).flatten(order="F")
+    if arr.size == 1: return xp.full(Nx, float(arr[0]), dtype=float)
+    if arr.size == Nx: return arr
+    raise ValueError(f"{name} length {arr.size} incompatible with grid size {Nx}")
+
 def simulate(kgrid, medium, source, sensor, backend="auto"):
     """1D k-Space Pseudospectral Wave Propagator."""
     # Use GPU if available and requested
@@ -53,16 +60,14 @@ def simulate(kgrid, medium, source, sensor, backend="auto"):
     if cfl > 1.0: print(f"Warning: Unstable CFL condition: {cfl:.2f} > 1.0")
 
     # k-space operators with time-staggering correction (sinc factor)
-    c_ref = float(xp.max(c0))
-    k = 2 * np.pi * xp.fft.fftfreq(Nx, d=dx)
-    kappa = xp.sinc((c_ref * k * dt / 2) / np.pi)
-    source_kappa = xp.cos(c_ref * k * dt / 2)  # Correction for additive sources
+    c_ref, k = float(xp.max(c0)), 2 * np.pi * xp.fft.fftfreq(Nx, d=dx)
+    kappa, source_kappa = xp.sinc((c_ref * k * dt / 2) / np.pi), xp.cos(c_ref * k * dt / 2)
     op_grad = 1j * k * kappa * xp.exp( 1j * k * dx/2)  # Gradient with forward shift
     op_div  = 1j * k * kappa * xp.exp(-1j * k * dx/2)  # Divergence with backward shift
     spectral_diff = lambda f, op: xp.real(xp.fft.ifft(op * xp.fft.fft(f)))
 
     # Physics operators return 0 or identity when feature is disabled
-    absorption, dispersion, nonlinearity, nonlinear_factor = _build_physics_ops(medium, k, rho0, xp)
+    absorption, dispersion, nonlinearity, nonlinear_factor = _build_physics_ops(medium, k, rho0, Nx, xp)
     source_p_op, source_u_op = _build_source_ops(source, c0, dt, dx, Nx, source_kappa, xp)
 
     # Initial pressure source (applied at t=0, overriding computed values)
@@ -97,140 +102,86 @@ def simulate(kgrid, medium, source, sensor, backend="auto"):
 
     return {"sensor_data": _to_cpu(sensor_data), "pressure": _to_cpu(p)}
 
-def _build_physics_ops(medium, k, rho0, xp):
+def _build_physics_ops(medium, k, rho0, Nx, xp):
     """Build composable physics operators (return 0/identity when disabled)."""
-    absorption, dispersion = _build_absorption_ops(medium, k, rho0, xp)
-
-    Nx = k.size
-    def _expand_to_grid(val, name):
-        arr = xp.array(val, dtype=float).flatten(order="F")
-        if arr.size == 1:
-            return xp.full(Nx, float(arr[0]), dtype=float)
-        if arr.size == Nx:
-            return arr
-        raise ValueError(f"{name} length {arr.size} incompatible with grid size {Nx}")
+    absorption, dispersion = _build_absorption_ops(medium, k, rho0, Nx, xp)
 
     BonA_raw = medium.get("BonA", 0)
-    BonA = _expand_to_grid(BonA_raw, "BonA") if _is_nonzero(BonA_raw) else None
+    if not _is_nonzero(BonA_raw):
+        return absorption, dispersion, lambda rho: 0, lambda rho: 1.0
 
-    if BonA is not None:
-        # Nonlinear acoustics: pressure depends on rho^2
-        nonlinearity = lambda rho: BonA * rho**2 / (2 * rho0)
-        nonlinear_factor = lambda rho: (2*rho + rho0) / rho0
-    else:
-        nonlinearity = lambda rho: 0
-        nonlinear_factor = lambda rho: 1.0
-
-    return absorption, dispersion, nonlinearity, nonlinear_factor
+    # Nonlinear acoustics: pressure depends on rho^2
+    BonA = _expand_to_grid(BonA_raw, Nx, xp, "BonA")
+    return (absorption, dispersion,
+            lambda rho: BonA * rho**2 / (2 * rho0),
+            lambda rho: (2*rho + rho0) / rho0)
 
 def _build_source_ops(source, c0, dt, dx, Nx, source_kappa, xp):
     """Build time-varying source operators for pressure and velocity."""
 
-    def build_source_operator(mask_raw, signal_raw, mode, scale_dirichlet, scale_additive):
+    def build_source_operator(mask_raw, signal_raw, mode, dirichlet_scale, additive_scale):
         """Generic factory for source operators (pressure or velocity)."""
         if not (_is_nonzero(mask_raw) and _is_nonzero(signal_raw)):
             return lambda t, field: field
 
         mask = xp.array(mask_raw, dtype=bool).flatten(order="F")
         signal = xp.array(signal_raw, dtype=float).flatten(order="F")
-        c0_at_source = c0[mask] if c0.size > 1 else c0
-
-        # Scale factors from MATLAB's kspaceFirstOrder_scaleSourceTerms.m
-        if mode == "dirichlet":
-            scaled = signal / scale_dirichlet(c0_at_source)
-        else:
-            scaled = signal * scale_additive(c0_at_source)
-
+        c0_src = c0[mask] if c0.size > 1 else c0
+        scaled = signal / dirichlet_scale(c0_src) if mode == "dirichlet" else signal * additive_scale(c0_src)
         get_value = lambda t: scaled[t] if scaled.ndim == 1 else scaled[:, t]
 
         if mode == "dirichlet":
-            # Replace field values at source points
-            def apply_source(t, field):
-                if t < len(scaled): field[mask] = get_value(t)
-                return field
-        elif mode == "additive":
-            # Add with k-space correction for numerical stability
-            def apply_source(t, field):
-                if t < len(scaled):
-                    src = xp.zeros(Nx, dtype=field.dtype)
-                    src[mask] = get_value(t)
-                    return field + xp.real(xp.fft.ifft(source_kappa * xp.fft.fft(src)))
-                return field
-        else:  # additive-no-correction
-            # Add without k-space correction (for testing/comparison)
-            def apply_source(t, field):
-                if t < len(scaled): field[mask] = field[mask] + get_value(t)
-                return field
-
-        return apply_source
+            return lambda t, field: (field.__setitem__(mask, get_value(t)), field)[1] if t < len(scaled) else field
+        if mode == "additive":
+            def apply_additive(t, field):
+                if t >= len(scaled): return field
+                src = xp.zeros(Nx, dtype=field.dtype)
+                src[mask] = get_value(t)
+                return field + xp.real(xp.fft.ifft(source_kappa * xp.fft.fft(src)))
+            return apply_additive
+        # additive-no-correction
+        return lambda t, field: (field.__setitem__(mask, field[mask] + get_value(t)), field)[1] if t < len(scaled) else field
 
     # Pressure source: scale by 1/c0^2 (dirichlet) or 2*dt/(c0*dx) (additive)
     source_p_op = build_source_operator(
         source.get("p_mask", 0), source.get("p", 0), source.get("p_mode", "additive"),
-        scale_dirichlet=lambda c: c**2,
-        scale_additive=lambda c: 2*dt/(c*dx))
+        lambda c: c**2, lambda c: 2*dt/(c*dx))
 
     # Velocity source: no scaling (dirichlet) or 2*c0*dt/dx (additive)
     source_u_op = build_source_operator(
         source.get("u_mask", 0), source.get("ux", 0), source.get("u_mode", "additive"),
-        scale_dirichlet=lambda c: 1,
-        scale_additive=lambda c: 2*c*dt/dx)
+        lambda c: 1, lambda c: 2*c*dt/dx)
 
     return source_p_op, source_u_op
 
-def _build_absorption_ops(medium, k, rho0, xp):
+def _build_absorption_ops(medium, k, rho0, Nx, xp):
     """Build absorption and dispersion operators for power-law attenuation."""
-    Nx = k.size
-
-    def _expand_to_grid(val, name):
-        """Ensure medium parameters are 1D arrays matching the grid length."""
-        arr = xp.array(val, dtype=float).flatten(order="F")
-        if arr.size == 1:
-            return xp.full(Nx, float(arr[0]), dtype=float)
-        if arr.size == Nx:
-            return arr
-        raise ValueError(f"{name} length {arr.size} incompatible with grid size {Nx}")
-
     alpha_coeff_raw = medium.get("alpha_coeff", 0)
-    alpha_power_raw = medium.get("alpha_power", 1.5)
-
     if not _is_nonzero(alpha_coeff_raw):
         return lambda duxdx: 0, lambda rho: 0
 
-    alpha_coeff = _expand_to_grid(alpha_coeff_raw, "alpha_coeff")
-    c0 = _expand_to_grid(medium.get("sound_speed", medium.get("c0")), "sound_speed")
-
-    # alpha_power is expected to be a scalar; fall back to first element if an array is passed
-    alpha_power_arr = xp.array(alpha_power_raw, dtype=float).flatten(order="F")
-    alpha_power = float(alpha_power_arr[0])
+    alpha_coeff = _expand_to_grid(alpha_coeff_raw, Nx, xp, "alpha_coeff")
+    c0 = _expand_to_grid(medium.get("sound_speed", medium.get("c0")), Nx, xp, "sound_speed")
+    alpha_power = float(xp.array(medium.get("alpha_power", 1.5), dtype=float).flatten(order="F")[0])
 
     # Convert from dB/(MHz^y cm) to Nepers/((rad/s)^y m)
     alpha_np = 100 * alpha_coeff * (1e-6 / (2 * np.pi))**alpha_power / (20 * np.log10(np.e))
-
     spectral_diff = lambda f, op: xp.real(xp.fft.ifft(op * xp.fft.fft(f)))
 
     # Stokes absorption (y=2): simple viscous damping, no fractional Laplacian needed
     if abs(alpha_power - 2.0) < 1e-10:
-        tau = -2 * alpha_np * c0
-        return lambda duxdx: tau * rho0 * duxdx, lambda rho: 0
+        return lambda duxdx: -2 * alpha_np * c0 * rho0 * duxdx, lambda rho: 0
 
     # General power-law: requires fractional Laplacian for causality
-    tau = -2 * alpha_np * c0**(alpha_power - 1)
-    eta = 2 * alpha_np * c0**alpha_power * xp.tan(np.pi * alpha_power / 2)
-
     def fractional_laplacian(power):
-        """Compute |k|^power with proper handling of k=0 singularity."""
         k_mag = xp.abs(xp.fft.fftshift(k))
-        op = xp.where(xp.isinf(k_mag**power), 0, k_mag**power)
-        return xp.fft.ifftshift(op)
+        return xp.fft.ifftshift(xp.where(k_mag == 0, 0, k_mag**power))
 
-    nabla1 = fractional_laplacian(alpha_power - 2)
-    nabla2 = fractional_laplacian(alpha_power - 1)
+    tau, eta = -2 * alpha_np * c0**(alpha_power - 1), 2 * alpha_np * c0**alpha_power * xp.tan(np.pi * alpha_power / 2)
+    nabla1, nabla2 = fractional_laplacian(alpha_power - 2), fractional_laplacian(alpha_power - 1)
 
-    absorption = lambda duxdx: tau * spectral_diff(rho0 * duxdx, nabla1)
-    dispersion = lambda rho: eta * spectral_diff(rho, nabla2)
-
-    return absorption, dispersion
+    return (lambda duxdx: tau * spectral_diff(rho0 * duxdx, nabla1),
+            lambda rho: eta * spectral_diff(rho, nabla2))
 
 def interop_sanity(arr):
     """Verify MATLAB/Python data layout (for testing)."""
