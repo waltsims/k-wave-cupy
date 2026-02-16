@@ -140,8 +140,15 @@ end
 func_path = which('kspaceFirstOrder1D');
 using_python_backend = contains(func_path, 'shims');
 
+% Debug: Show which function is being used
+disp(['DEBUG: kspaceFirstOrder1D resolves to: ' func_path]);
+disp(['DEBUG: Using Python backend: ' mat2str(using_python_backend)]);
+
 % Reference data file path
 ref_data_file = fullfile(fileparts(mfilename('fullpath')), 'kspaceFirstOrder1D_reference_data.mat');
+
+disp(['DEBUG: Reference data file: ' ref_data_file]);
+disp(['DEBUG: Reference file exists: ' mat2str(exist(ref_data_file, 'file') == 2)]);
 
 if using_python_backend
     % Load reference data for comparison
