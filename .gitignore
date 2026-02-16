@@ -41,3 +41,18 @@ Thumbs.db
 
 *.mat
 *.asv
+
+# Python files #
+################
+
+__pycache__/
+*.pyc
+*.pyo
+.venv*/
+.pytest_cache/
+
+# Test outputs #
+################
+
+tests/plots/
+*.pdf

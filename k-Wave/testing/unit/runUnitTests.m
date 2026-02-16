@@ -100,10 +100,16 @@ for filename_index = 1:num_files
         end
         fprintf('%s', captured_output);
         disp('  ');
-    catch %#ok<CTCH>
+    catch ME
         % if the test gives an error for any reason, assign as failed
         test_pass = false;
-        captured_output = 'No information available';
+        captured_output = sprintf('ERROR: %s\nFile: %s\nLine: %d\nStack trace:\n', ...
+            ME.message, ME.stack(1).file, ME.stack(1).line);
+        for stack_idx = 1:length(ME.stack)
+            captured_output = [captured_output sprintf('  %s (line %d)\n', ...
+                ME.stack(stack_idx).name, ME.stack(stack_idx).line)]; %#ok<AGROW>
+        end
+        fprintf('%s', captured_output);
     end
 
     % store test result and info

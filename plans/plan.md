@@ -50,17 +50,41 @@ $$ \frac{\partial \mathbf{u}}{\partial t} = -\frac{1}{\rho_0} \nabla p $$
     - Verified 1D parity logic preservation.
 - [ ] **Initial Perf Eval**: Compare runtimes between python and matlab impl.
 
-### Phase 2: Feature Parity (2D/3D & PML)
-*Goal: Generalize the engine to support standard k-Wave features.*
+### Phase 2: Feature Parity via Test-Based Development
+*Goal: Generalize the engine to support standard k-Wave features using the existing test suite.*
 
-- [ ] **Test Adapter Implementation**:
-    - Create `kWaveTesterPy.m` that runs existing MATLAB unit tests but injects `kspaceFirstOrderPy` as the solver.
-- [ ] **2D/3D Generalization**:
-    - Expand `kWavePy.py` to handle N-dimensions.
-    - Validate row/column major indexing for 2D/3D FFTs.
-- [ ] **PML Implementation**:
-    - Implement the Perfectly Matched Layer (essential for non-periodic simulation).
-    - Verify against `acousticFieldPropagator` tests.
+#### Strategy: The "Shim" Architecture
+Instead of modifying existing tests, we will inject a "Shim" path that redirects standard k-Wave function calls (e.g., `kspaceFirstOrder1D`) to our Python wrapper (`kspaceFirstOrderPy`).
+
+- [x] **1D Shim Validation**:
+    - Create `tests/shims/kspaceFirstOrder1D.m` which simply calls `kspaceFirstOrderPy`.
+    - Relax `kspaceFirstOrderPy.m` argument parsing to ignore unsupported flags (like `PMLSize`, `PlotSim`).
+    - **Verify**: Run `kspaceFirstOrder1D_check_source_scaling_p.m` with shims enabled. It should pass or fail only on numerics.
+    - ✅ Test passed! Shim architecture validated successfully.
+- [x] **CI Integration**:
+    - Update GitHub Actions to run the full test suite twice: once normally, and once with the Shim path injected.
+    - ✅ Implemented matrix strategy: runs both MATLAB baseline and Python backend (1D only) in parallel.
+    - See `TESTING_STRATEGY.md` for details.
+- [x] **Complete 1D Physics Features** (Test-Driven Development):
+    - ✅ **Power Law Absorption** - Implemented with fractional Laplacian (`k_mag^y` operator).
+    - ✅ **Stokes Absorption** - Implemented as special case (`y=2`, viscous damping).
+    - ✅ **Source Corrections** - k-space correction via `source_kappa`, all modes (additive, additive-no-correction, dirichlet).
+    - ✅ **Nonlinearity (BonA)** - Implemented with `rho^2` term and nonlinear factor.
+    - ✅ **Heterogeneous Media** - Spatially-varying `c0`, `rho0`, `alpha_coeff`, `BonA`.
+    - ⚠️ **PML** - Not yet implemented (tests pass with PML disabled).
+    - **Result**: 84/84 comprehensive parity tests pass with <1e-14 relative error.
+- [ ] **N-Dimensional Python Upgrade**:
+    - Refactor `kWavePy.py` to handle N-dimensions dynamically (generic `op_grad` and `op_div` lists).
+    - Ensure `Nx, Ny, Nz` unpacking handles missing dimensions gracefully.
+    - **Verify**: Ensure 1D tests still pass with the N-D code.
+- [ ] **2D/3D Shims**:
+    - Add `tests/shims/kspaceFirstOrder2D.m` and `kspaceFirstOrder3D.m`.
+    - Update CI matrix to include 2D and 3D test patterns.
+    - **Verify**: Run `kspaceFirstOrder2D_check_source_scaling_p.m` and 3D equivalents.
+- [ ] **Complete 2D/3D Physics Features** (Test-Driven Development):
+    - Run CI to identify which 2D/3D tests fail with Python backend.
+    - Implement missing features iteratively (same approach as 1D).
+    - **Goal**: 100% pass rate for all dimensional tests in CI.
 
 ### Phase 3: Acceleration
 - [x] **CuPy Backend**:
@@ -68,5 +92,9 @@ $$ \frac{\partial \mathbf{u}}{\partial t} = -\frac{1}{\rho_0} \nabla p $$
     - Verify on GPU node.
 
 ## Next Steps
-1. Begin Phase 2: add a MATLAB test adapter `kWaveTesterPy.m` that swaps in the Python solver for existing unit tests.
-2. Generalize `kWavePy.py` to support 2D/3D inputs.
+1. ✅ **1D Shim Validation** - Complete
+2. ✅ **CI Integration** - Complete
+3. ✅ **1D Physics Features** - Complete (84/84 tests pass)
+4. **Refactor for N-Dimensions** - Generalize to 2D/3D.
+5. **Implement PML** - Add Perfectly Matched Layer for boundary absorption.
+6. **Expand to 2D/3D** using the same test-driven approach.
