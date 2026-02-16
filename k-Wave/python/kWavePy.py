@@ -93,11 +93,17 @@ def simulate(kgrid, medium, source, sensor, backend="auto"):
             p, rho = p0_initial.copy(), p0_initial / c0**2
             u = (dt / (2 * rho0_sgx)) * spectral_diff(p, op_grad)
 
-        # Validate mask hasn't been corrupted (debug CI issue)
-        n_mask = int(xp.sum(mask))
-        if n_mask != sensor_data.shape[0]:
-            raise ValueError(f"Mask corruption detected at t={t}: sum(mask)={n_mask}, expected={sensor_data.shape[0]}, mask={mask}")
-        sensor_data[:, t] = p[mask]
+        # Debug CI issue: detailed mask analysis
+        p_masked = p[mask]
+        if p_masked.shape[0] != sensor_data.shape[0]:
+            raise ValueError(
+                f"Shape mismatch at t={t}: p[mask].shape={p_masked.shape}, "
+                f"sensor_data[:,t].shape={sensor_data[:,t].shape}, "
+                f"sum(mask)={int(xp.sum(mask))}, mask.dtype={mask.dtype}, "
+                f"mask.shape={mask.shape}, p.shape={p.shape}, "
+                f"mask[:10]={mask[:10]}, mask[-10:]={mask[-10:]}"
+            )
+        sensor_data[:, t] = p_masked
 
     return {"sensor_data": _to_cpu(sensor_data), "pressure": _to_cpu(p)}
 
