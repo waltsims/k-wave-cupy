@@ -43,7 +43,7 @@ s_py = py.dict(pyargs( ...
 d_py = py.dict(pyargs('mask', toNumpy(getField(sensor, {'mask'}, 1))));
 
 % Run simulation and convert result back to MATLAB double
-res = kWavePy.simulate(k_py, m_py, s_py, d_py, pyargs('backend', char(p.Results.Backend)));
+res = kWavePy.simulate_from_dicts(k_py, m_py, s_py, d_py, pyargs('backend', char(p.Results.Backend)));
 sensor_data = double(res{'sensor_data'});
 end
 
