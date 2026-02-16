@@ -51,9 +51,8 @@ def simulate(kgrid, medium, source, sensor, backend="auto"):
     # 5. Precompute k-space Operators
     k = 2 * np.pi * xp.fft.fftfreq(Nx, d=dx)
     kappa = xp.sinc((xp.max(c0) * k * dt / 2) / np.pi)
-    ddx_k = xp.fft.ifftshift(1j * k)
-    op_grad = ddx_k * kappa * xp.exp( 1j * k * dx/2)
-    op_div  = ddx_k * kappa * xp.exp(-1j * k * dx/2)
+    op_grad = 1j * k * kappa * xp.exp( 1j * k * dx/2)
+    op_div  = 1j * k * kappa * xp.exp(-1j * k * dx/2)
 
     def diff(f, op): return xp.real(xp.fft.ifft(op * xp.fft.fft(f)))
 
