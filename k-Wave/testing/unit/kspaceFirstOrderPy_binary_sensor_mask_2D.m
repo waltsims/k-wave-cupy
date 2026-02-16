@@ -74,7 +74,7 @@ sensor_data_matlab = kspaceFirstOrder2D(kgrid, medium, source, sensor, ...
 % =========================================================================
 
 disp('Running Python backend...');
-sensor_data_python = kspaceFirstOrderPy(kgrid, medium, source, sensor);
+sensor_data_python = kspaceFirstOrderPy(kgrid, medium, source, sensor, 'PMLSize', 0);
 
 % =========================================================================
 % COMPARISON

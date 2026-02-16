@@ -88,6 +88,9 @@ class Simulation:
         # Sensor mask
         self._setup_sensor_mask()
 
+        # PML (Perfectly Matched Layer)
+        self._setup_pml()
+
         # K-space operators (one per dimension)
         self._setup_kspace_operators()
 
@@ -115,6 +118,66 @@ class Simulation:
             else:
                 self.mask = self.mask.reshape(self.grid_shape, order="F")
         self.n_sensor_points = int(xp.sum(self.mask))
+
+        # Record start index (1-based in MATLAB, convert to 0-based for Python)
+        record_start_raw = _attr(self.sensor, 'record_start_index', 1)
+        self.record_start_index = int(record_start_raw) - 1  # Convert to 0-based
+        self.num_recorded_time_points = self.Nt - self.record_start_index
+
+    def _setup_pml(self):
+        """Build Perfectly Matched Layer absorption operators for each dimension."""
+        xp = self.xp
+        axis_names = ['x', 'y', 'z']
+
+        self.pml_list = []      # For pressure/density
+        self.pml_sg_list = []   # For velocity (staggered grid)
+
+        for axis in range(self.ndim):
+            N = self.dims[axis]
+            dx = self.spacing[axis]
+            name = axis_names[axis]
+
+            pml_size = int(_attr(self.kgrid, f'pml_size_{name}', 0))
+            pml_alpha = float(_attr(self.kgrid, f'pml_alpha_{name}', 0))
+
+            if pml_size == 0 or pml_alpha == 0:
+                # No PML for this dimension - use identity (multiply by 1)
+                shape = [1] * self.ndim
+                shape[axis] = N
+                self.pml_list.append(xp.ones(shape, dtype=float))
+                self.pml_sg_list.append(xp.ones(shape, dtype=float))
+            else:
+                # Build PML profile: exp(-alpha * (c/dx) * (x/pml_size)^4 * dt/2)
+                x = xp.arange(1, pml_size + 1, dtype=float)
+
+                # Regular grid (for pressure/density)
+                pml_left = pml_alpha * (self.c_ref / dx) * ((x - pml_size - 1) / (-pml_size))**4
+                pml_right = pml_alpha * (self.c_ref / dx) * (x / pml_size)**4
+
+                # Staggered grid (for velocity)
+                pml_left_sg = pml_alpha * (self.c_ref / dx) * ((x + 0.5 - pml_size - 1) / (-pml_size))**4
+                pml_right_sg = pml_alpha * (self.c_ref / dx) * ((x + 0.5) / pml_size)**4
+
+                # Exponentiate
+                pml_left = xp.exp(-pml_left * self.dt / 2)
+                pml_right = xp.exp(-pml_right * self.dt / 2)
+                pml_left_sg = xp.exp(-pml_left_sg * self.dt / 2)
+                pml_right_sg = xp.exp(-pml_right_sg * self.dt / 2)
+
+                # Assemble full PML profile (1 in interior)
+                pml = xp.ones(N, dtype=float)
+                pml[:pml_size] = pml_left
+                pml[-pml_size:] = pml_right
+
+                pml_sg = xp.ones(N, dtype=float)
+                pml_sg[:pml_size] = pml_left_sg
+                pml_sg[-pml_size:] = pml_right_sg
+
+                # Reshape for broadcasting
+                shape = [1] * self.ndim
+                shape[axis] = N
+                self.pml_list.append(pml.reshape(shape))
+                self.pml_sg_list.append(pml_sg.reshape(shape))
 
     def _setup_kspace_operators(self):
         """Build k-space gradient/divergence operators for each dimension."""
@@ -198,12 +261,33 @@ class Simulation:
             mask = xp.array(mask_raw, dtype=bool).flatten(order="F")
             if mask.size == 1:
                 mask = xp.full(self.grid_shape, bool(mask[0]), dtype=bool).flatten(order="F")
-            signal = xp.array(signal_raw, dtype=float).flatten(order="F")
+            n_src = int(xp.sum(mask))
+
+            # Handle signal: can be 1D (Nt,) or 2D (n_src, Nt)
+            signal_arr = xp.array(signal_raw, dtype=float, order="F")
+            if signal_arr.ndim == 1:
+                # 1D signal: same value for all source points, reshape to (1, Nt)
+                signal = signal_arr.reshape(1, -1)
+                signal_len = signal.shape[1]
+            else:
+                # 2D signal: (n_src, Nt) in Fortran order
+                signal = signal_arr.reshape(-1, signal_arr.shape[-1], order="F") if signal_arr.ndim > 2 else signal_arr
+                signal_len = signal.shape[1]
+
+            # Scale factor depends on mode
             c0_flat = self.c0.flatten(order="F")
-            c0_src = c0_flat[mask] if c0_flat.size > 1 else c0_flat
-            scaled = signal / scale_dirichlet(c0_src) if mode == "dirichlet" else signal * scale_additive(c0_src)
-            get_val = lambda t: scaled[t] if scaled.ndim == 1 else scaled[:, t]
-            signal_len = len(scaled) if scaled.ndim == 1 else scaled.shape[1]
+            c0_src = c0_flat[mask] if c0_flat.size > 1 else xp.full(n_src, float(c0_flat))
+            if mode == "dirichlet":
+                scale = 1.0 / scale_dirichlet(c0_src)
+            else:
+                scale = scale_additive(c0_src)
+            # Ensure scale is an array for consistent handling
+            scale = xp.atleast_1d(xp.asarray(scale))
+
+            def get_val(t):
+                if signal.shape[0] == 1:
+                    return xp.full(n_src, float(signal[0, t])) * scale
+                return signal[:, t] * scale
 
             def dirichlet(t, field):
                 if t >= signal_len: return field
@@ -250,8 +334,8 @@ class Simulation:
         # Staggered density for each dimension
         self.rho0_staggered = [self._stagger(self.rho0, axis) for axis in range(self.ndim)]
 
-        # Sensor data storage
-        self.sensor_data = xp.zeros((self.n_sensor_points, self.Nt), dtype=float)
+        # Sensor data storage (sized based on record_start_index)
+        self.sensor_data = xp.zeros((self.n_sensor_points, self.num_recorded_time_points), dtype=float)
 
         # Initial pressure source (p0)
         p0_raw = _attr(self.source, 'p0', 0)
@@ -270,18 +354,24 @@ class Simulation:
 
         xp = self.xp
 
-        # Momentum equation: du_i/dt = -grad_i(p)/rho
+        # Momentum equation: du_i/dt = -grad_i(p)/rho, with PML
         for i in range(self.ndim):
-            self.u[i] -= (self.dt / self.rho0_staggered[i]) * self._diff(self.p, self.op_grad_list[i])
+            pml_sg = self.pml_sg_list[i]
+            # Apply PML twice: u = pml * (pml * u - dt/rho * grad_p)
+            self.u[i] = pml_sg * (pml_sg * self.u[i]
+                - (self.dt / self.rho0_staggered[i]) * self._diff(self.p, self.op_grad_list[i]))
             self.u[i] = self._source_u_ops[i](self.t, self.u[i])
 
-        # Mass conservation: drho_i/dt = -rho0 * div_i(u_i)
+        # Mass conservation: drho_i/dt = -rho0 * div_i(u_i), with PML
         rho_total = sum(self.rho_split)
         div_u_components = []
         for i in range(self.ndim):
+            pml = self.pml_list[i]
             div_u_i = self._diff(self.u[i], self.op_div_list[i])
             div_u_components.append(div_u_i)
-            self.rho_split[i] -= self.dt * self.rho0 * div_u_i * self._nonlinear_factor(rho_total)
+            # Apply PML twice: rho = pml * (pml * rho - dt * rho0 * div_u)
+            self.rho_split[i] = pml * (pml * self.rho_split[i]
+                - self.dt * self.rho0 * div_u_i * self._nonlinear_factor(rho_total))
             self.rho_split[i] = self._source_p_op(self.t, self.rho_split[i], i)
 
         # Equation of state
@@ -297,8 +387,10 @@ class Simulation:
                 self.rho_split[i] = self._p0_initial / (self.c0**2 * self.ndim)
                 self.u[i] = (self.dt / (2 * self.rho0_staggered[i])) * self._diff(self.p, self.op_grad_list[i])
 
-        # Record sensor data
-        self.sensor_data[:, self.t] = self.p[self.mask]
+        # Record sensor data (only if past record_start_index)
+        if self.t >= self.record_start_index:
+            file_index = self.t - self.record_start_index
+            self.sensor_data[:, file_index] = self.p[self.mask]
         self.t += 1
         return self
 

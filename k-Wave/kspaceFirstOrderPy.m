@@ -10,7 +10,11 @@ if isempty(kgrid.dt) || (ischar(kgrid.dt) && strcmp(kgrid.dt, 'auto'))
          '  kgrid.makeTime(medium.sound_speed)      %% Auto-calculate based on CFL\n' ...
          '  kgrid.setTime(Nt, dt)                   %% Set explicitly']);
 end
-p = inputParser; p.KeepUnmatched = true; addParameter(p, 'Backend', 'auto'); parse(p, varargin{:});
+p = inputParser; p.KeepUnmatched = true;
+addParameter(p, 'Backend', 'auto');
+addParameter(p, 'PMLSize', 20);
+addParameter(p, 'PMLAlpha', 2);
+parse(p, varargin{:});
 
 % Load Python module once per session (persistent avoids repeated imports)
 persistent kWavePy
@@ -26,12 +30,21 @@ toNumpy = @(x) py.numpy.array(double(x), pyargs('order', 'F'));
 getField = @(s, names, default) getFieldValue(s, names, default);
 
 % Build kgrid dict with conditional fields for each dimension
-kgrid_args = {'Nx', int64(kgrid.Nx), 'dx', kgrid.dx, 'Nt', int64(kgrid.Nt), 'dt', kgrid.dt};
+% Handle PMLSize as scalar or [x,y] or [x,y,z] array
+pml_size = p.Results.PMLSize;
+pml_alpha = p.Results.PMLAlpha;
+if isscalar(pml_size), pml_size = repmat(pml_size, 1, kgrid.dim); end
+if isscalar(pml_alpha), pml_alpha = repmat(pml_alpha, 1, kgrid.dim); end
+
+kgrid_args = {'Nx', int64(kgrid.Nx), 'dx', kgrid.dx, 'Nt', int64(kgrid.Nt), 'dt', kgrid.dt, ...
+    'pml_size_x', int64(pml_size(1)), 'pml_alpha_x', pml_alpha(1)};
 if kgrid.dim >= 2
-    kgrid_args = [kgrid_args, {'Ny', int64(kgrid.Ny), 'dy', kgrid.dy}];
+    kgrid_args = [kgrid_args, {'Ny', int64(kgrid.Ny), 'dy', kgrid.dy, ...
+        'pml_size_y', int64(pml_size(2)), 'pml_alpha_y', pml_alpha(2)}];
 end
 if kgrid.dim >= 3
-    kgrid_args = [kgrid_args, {'Nz', int64(kgrid.Nz), 'dz', kgrid.dz}];
+    kgrid_args = [kgrid_args, {'Nz', int64(kgrid.Nz), 'dz', kgrid.dz, ...
+        'pml_size_z', int64(pml_size(3)), 'pml_alpha_z', pml_alpha(3)}];
 end
 k_py = py.dict(pyargs(kgrid_args{:}));
 
@@ -59,7 +72,8 @@ if kgrid.dim >= 3
 end
 s_py = py.dict(pyargs(source_args{:}));
 
-d_py = py.dict(pyargs('mask', toNumpy(getField(sensor, {'mask'}, 1))));
+d_py = py.dict(pyargs('mask', toNumpy(getField(sensor, {'mask'}, 1)), ...
+    'record_start_index', int64(getField(sensor, {'record_start_index'}, 1))));
 
 % Run simulation and convert result back to MATLAB double
 res = kWavePy.simulate_from_dicts(k_py, m_py, s_py, d_py, pyargs('backend', char(p.Results.Backend)));
