@@ -9,12 +9,12 @@ function results = run_tests_by_dim(dim, verbose)
 
 if nargin < 2, verbose = false; end
 
-% Setup paths
+% Shims redirect standard kspaceFirstOrder calls to Python backend
 project_root = fileparts(fileparts(mfilename('fullpath')));
 addpath(fullfile(project_root, 'k-Wave'));
 addpath(fullfile(project_root, 'tests', 'shims'));
 
-% Setup Python (use PYTHON_PATH env var if set, otherwise local venv)
+% Environment variable allows CI/testing to override default venv location
 python_path = getenv('PYTHON_PATH');
 if isempty(python_path)
     python_path = fullfile(project_root, '.venv310', 'bin', 'python');

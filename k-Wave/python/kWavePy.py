@@ -13,9 +13,11 @@ except ImportError: cp = None
 # Utility Functions
 # =============================================================================
 
+# Graceful attribute access for optional MATLAB struct fields
 def _attr(obj, name, default=None):
     return getattr(obj, name, default)
 
+# Zero arrays/scalars from MATLAB indicate "disabled" features
 def _is_enabled(x):
     return x is not None and not (np.all(x == 0) if hasattr(x, '__len__') else x == 0)
 
@@ -119,9 +121,9 @@ class Simulation:
                 self.mask = self.mask.reshape(self.grid_shape, order="F")
         self.n_sensor_points = int(xp.sum(self.mask))
 
-        # Record start index (1-based in MATLAB, convert to 0-based for Python)
+        # MATLAB uses 1-based indexing; convert to Python's 0-based for array slicing
         record_start_raw = _attr(self.sensor, 'record_start_index', 1)
-        self.record_start_index = int(record_start_raw) - 1  # Convert to 0-based
+        self.record_start_index = int(record_start_raw) - 1
         self.num_recorded_time_points = self.Nt - self.record_start_index
 
     def _setup_pml(self):
@@ -191,20 +193,19 @@ class Simulation:
             shape[axis] = N
             self.k_list.append(k.reshape(shape))
 
-        # Compute N-D k-magnitude: sqrt(kx² + ky² + kz²)
-        # This is critical for correct k-space correction in multiple dimensions
+        # K-magnitude must be computed from all dimensions to preserve isotropy in k-space
         k_mag_sq = self.k_list[0]**2
         for k in self.k_list[1:]:
             k_mag_sq = k_mag_sq + k**2
         k_mag = xp.sqrt(k_mag_sq)
 
-        # Single kappa for all dimensions (MATLAB uses kgrid.k which is k-magnitude)
+        # Single kappa from k-magnitude ensures correct dispersion relation in N-D
         self.kappa = xp.sinc((self.c_ref * k_mag * self.dt / 2) / np.pi)
 
         # Source kappa: cos instead of sinc
         self.source_kappa = xp.cos(self.c_ref * k_mag * self.dt / 2)
 
-        # Build per-dimension gradient/divergence operators (shift only, kappa applied separately)
+        # Per-dimension operators handle staggered grid shifts; kappa applied globally
         self.op_grad_list = []
         self.op_div_list = []
         for axis, (N, dx) in enumerate(zip(self.dims, self.spacing)):
@@ -234,7 +235,7 @@ class Simulation:
                 eta = 2 * alpha_np * self.c0**alpha_power * xp.tan(np.pi * alpha_power / 2)
                 nabla1 = self._fractional_laplacian(alpha_power - 2)
                 nabla2 = self._fractional_laplacian(alpha_power - 1)
-                # Absorption uses fractional Laplacian WITHOUT kappa (matches MATLAB)
+                # Fractional Laplacian already includes full k-space structure; no kappa needed
                 self._absorption = lambda div_u: tau * self._diff(self.rho0 * div_u, nabla1, apply_kappa=False)
                 self._dispersion = lambda rho: eta * self._diff(rho, nabla2, apply_kappa=False)
 
@@ -329,6 +330,7 @@ class Simulation:
 
         self.p = xp.zeros(self.grid_shape, dtype=float)
         self.u = [xp.zeros(self.grid_shape, dtype=float) for _ in range(self.ndim)]
+        # Split density per dimension enables independent PML absorption in each direction
         self.rho_split = [xp.zeros(self.grid_shape, dtype=float) for _ in range(self.ndim)]
 
         # Staggered density for each dimension
@@ -357,7 +359,7 @@ class Simulation:
         # Momentum equation: du_i/dt = -grad_i(p)/rho, with PML
         for i in range(self.ndim):
             pml_sg = self.pml_sg_list[i]
-            # Apply PML twice: u = pml * (pml * u - dt/rho * grad_p)
+            # Double PML application implements second-order absorption (split-field PML)
             self.u[i] = pml_sg * (pml_sg * self.u[i]
                 - (self.dt / self.rho0_staggered[i]) * self._diff(self.p, self.op_grad_list[i]))
             self.u[i] = self._source_u_ops[i](self.t, self.u[i])
@@ -369,7 +371,7 @@ class Simulation:
             pml = self.pml_list[i]
             div_u_i = self._diff(self.u[i], self.op_div_list[i])
             div_u_components.append(div_u_i)
-            # Apply PML twice: rho = pml * (pml * rho - dt * rho0 * div_u)
+            # Double PML application implements second-order absorption (split-field PML)
             self.rho_split[i] = pml * (pml * self.rho_split[i]
                 - self.dt * self.rho0 * div_u_i * self._nonlinear_factor(rho_total))
             self.rho_split[i] = self._source_p_op(self.t, self.rho_split[i], i)
@@ -380,7 +382,7 @@ class Simulation:
         self.p = self.c0**2 * (rho_total + self._absorption(div_u_total)
                                - self._dispersion(rho_total) + self._nonlinearity(rho_total))
 
-        # Initial pressure override at t=0
+        # Initial pressure must override equation of state to inject p0 at t=0
         if self.t == 0 and self._p0_initial is not None:
             self.p = self._p0_initial.copy()
             for i in range(self.ndim):
@@ -438,8 +440,8 @@ def _to_namespace(d):
     """Convert dict to SimpleNamespace."""
     return SimpleNamespace(**dict(d))
 
+# MATLAB code uses both c0/sound_speed and rho0/density; normalize to canonical names
 def _normalize_medium(m):
-    """Normalize medium dict (handle c0/rho0 aliases)."""
     d = dict(m)
     if 'c0' in d and 'sound_speed' not in d: d['sound_speed'] = d.pop('c0')
     if 'rho0' in d and 'density' not in d: d['density'] = d.pop('rho0')

@@ -71,7 +71,8 @@ Instead of modifying existing tests, we will inject a "Shim" path that redirects
     - ✅ **Source Corrections** - k-space correction via `source_kappa`, all modes (additive, additive-no-correction, dirichlet).
     - ✅ **Nonlinearity (BonA)** - Implemented with `rho^2` term and nonlinear factor.
     - ✅ **Heterogeneous Media** - Spatially-varying `c0`, `rho0`, `alpha_coeff`, `BonA`.
-    - ⚠️ **PML** - Not yet implemented (tests pass with PML disabled).
+    - ✅ **PML** - Perfectly Matched Layer for boundary absorption (all dimensions).
+    - ✅ **sensor.record_start_index** - Start recording at a specified time step.
     - **Result**: 84/84 comprehensive parity tests pass with <1e-14 relative error.
 - [x] **N-Dimensional Python Upgrade**:
     - Refactored `kWavePy.py` to handle N-dimensions dynamically (generic `op_grad_list` and `op_div_list`).
@@ -88,10 +89,9 @@ Instead of modifying existing tests, we will inject a "Shim" path that redirects
     - **Fix**: Compute `kappa = sinc(c_ref * sqrt(kx² + ky² + kz²) * dt / 2)` matching MATLAB's `kgrid.k`.
     - **Result**: 2D parity improved from ~10% to **<2e-15** (machine precision).
     - **Result**: 3D parity improved from ~10% to **<2e-15** (machine precision).
-- [ ] **Complete 2D/3D Physics Features** (Test-Driven Development):
-    - Run CI to identify which 2D/3D tests fail with Python backend.
-    - Implement missing features iteratively (same approach as 1D).
-    - **Goal**: <1e-14 relative error for all dimensional tests (matching 1D performance).
+- [x] **Complete 2D/3D Physics Features** (Test-Driven Development):
+    - Ran full 2D/3D test suite with Python backend.
+    - **Result**: All tests pass! No missing features identified.
 
 ### Phase 3: Acceleration
 - [x] **CuPy Backend**:
@@ -104,5 +104,13 @@ Instead of modifying existing tests, we will inject a "Shim" path that redirects
 3. ✅ **1D Physics Features** - Complete (84/84 tests pass)
 4. ✅ **Refactor for N-Dimensions** - Complete (2D/3D basic simulations work)
 5. ✅ **Improve 2D/3D Parity** - Fixed! Now <2e-15 (machine precision).
-6. **Implement PML** - Add Perfectly Matched Layer for boundary absorption.
-7. **Complete 2D/3D Physics Features** - Run full test suite, implement missing features.
+6. ✅ **Implement PML** - Complete! Source scaling tests pass for 1D/2D/3D.
+7. ✅ **sensor.record_start_index** - Complete! Allows starting recording at specified time step.
+8. ✅ **Complete 2D/3D Physics Features** - All 2D/3D tests pass!
+
+## Status: Phase 2 Complete 🎉
+All physics features are implemented and tested across 1D, 2D, and 3D. The Python/CuPy backend achieves <2e-15 parity with MATLAB.
+
+**Remaining optional work:**
+- [ ] Performance benchmarking (Python vs MATLAB vs C++/CUDA)
+- [ ] Documentation and examples

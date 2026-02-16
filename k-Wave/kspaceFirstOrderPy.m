@@ -16,7 +16,7 @@ addParameter(p, 'PMLSize', 20);
 addParameter(p, 'PMLAlpha', 2);
 parse(p, varargin{:});
 
-% Load Python module once per session (persistent avoids repeated imports)
+% Persistent variable ensures Python module loads once per MATLAB session
 persistent kWavePy
 if isempty(kWavePy)
     module_dir = fullfile(fileparts(mfilename('fullpath')), 'python');
@@ -25,12 +25,11 @@ if isempty(kWavePy)
     py.importlib.reload(kWavePy);
 end
 
-% Marshal MATLAB structs to Python dicts (column-major order for MATLAB compatibility)
+% Column-major ('F') order preserves MATLAB array layout in NumPy
 toNumpy = @(x) py.numpy.array(double(x), pyargs('order', 'F'));
 getField = @(s, names, default) getFieldValue(s, names, default);
 
-% Build kgrid dict with conditional fields for each dimension
-% Handle PMLSize as scalar or [x,y] or [x,y,z] array
+% Expand scalar PML parameters to per-dimension arrays
 pml_size = p.Results.PMLSize;
 pml_alpha = p.Results.PMLAlpha;
 if isscalar(pml_size), pml_size = repmat(pml_size, 1, kgrid.dim); end
@@ -81,7 +80,7 @@ sensor_data = double(res{'sensor_data'});
 end
 
 function value = getFieldValue(s, names, default)
-    % Try each field name in order (supports aliasing like 'sound_speed'/'c0')
+    % Supports field aliasing (e.g., 'sound_speed'/'c0') for legacy code compatibility
     if ischar(names), names = {names}; end
     for i = 1:numel(names)
         if isprop(s, names{i}) || (isstruct(s) && isfield(s, names{i}))
