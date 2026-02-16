@@ -34,7 +34,8 @@ def simulate(kgrid, medium, source, sensor, backend="auto"):
     if mask_raw is None:
         mask = xp.ones(Nx, dtype=bool)  # Record all points by default
     else:
-        mask = xp.asarray(mask_raw, dtype=bool).flatten(order="F")
+        # Force copy to avoid memory aliasing with MATLAB-created arrays
+        mask = xp.array(mask_raw, dtype=bool, copy=True).flatten(order="F")
         if mask.size == 1:
             mask = xp.full(Nx, bool(mask[0]), dtype=bool)
 
@@ -92,6 +93,10 @@ def simulate(kgrid, medium, source, sensor, backend="auto"):
             p, rho = p0_initial.copy(), p0_initial / c0**2
             u = (dt / (2 * rho0_sgx)) * spectral_diff(p, op_grad)
 
+        # Validate mask hasn't been corrupted (debug CI issue)
+        n_mask = int(xp.sum(mask))
+        if n_mask != sensor_data.shape[0]:
+            raise ValueError(f"Mask corruption detected at t={t}: sum(mask)={n_mask}, expected={sensor_data.shape[0]}, mask={mask}")
         sensor_data[:, t] = p[mask]
 
     return {"sensor_data": _to_cpu(sensor_data), "pressure": _to_cpu(p)}
