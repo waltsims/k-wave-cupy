@@ -14,8 +14,12 @@ project_root = fileparts(fileparts(mfilename('fullpath')));
 addpath(fullfile(project_root, 'k-Wave'));
 addpath(fullfile(project_root, 'tests', 'shims'));
 
-% Setup Python
-pyenv('Version', fullfile(project_root, '.venv310', 'bin', 'python'));
+% Setup Python (use PYTHON_PATH env var if set, otherwise local venv)
+python_path = getenv('PYTHON_PATH');
+if isempty(python_path)
+    python_path = fullfile(project_root, '.venv310', 'bin', 'python');
+end
+pyenv('Version', python_path);
 
 % Get test directory
 test_dir = fullfile(project_root, 'k-Wave', 'testing', 'unit');
