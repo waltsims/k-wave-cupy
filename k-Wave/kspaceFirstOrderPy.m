@@ -1,8 +1,8 @@
 function sensor_data = kspaceFirstOrderPy(kgrid, medium, source, sensor, varargin)
-%KSPACEFIRSTORDERPY Minimal Python-backed 1D k-Wave solver.
+%KSPACEFIRSTORDERPY Minimal Python-backed N-D k-Wave solver (1D, 2D, 3D).
 
-% Validate inputs (Python backend has stricter requirements than MATLAB)
-if kgrid.dim ~= 1, error('Only 1D grids supported.'); end
+% Validate inputs (Python backend requires explicit time array)
+if kgrid.dim > 3, error('kspaceFirstOrderPy:UnsupportedDimension', 'Only 1D, 2D, 3D supported.'); end
 if isempty(kgrid.dt) || (ischar(kgrid.dt) && strcmp(kgrid.dt, 'auto'))
     error('kspaceFirstOrderPy:TimeNotSet', ...
         ['Time array not set. The Python backend requires explicit time array.\n' ...
@@ -25,21 +25,40 @@ end
 toNumpy = @(x) py.numpy.array(double(x), pyargs('order', 'F'));
 getField = @(s, names, default) getFieldValue(s, names, default);
 
-k_py = py.dict(pyargs('Nx', int64(kgrid.Nx), 'dx', kgrid.dx, 'Nt', int64(kgrid.Nt), 'dt', kgrid.dt));
+% Build kgrid dict with conditional fields for each dimension
+kgrid_args = {'Nx', int64(kgrid.Nx), 'dx', kgrid.dx, 'Nt', int64(kgrid.Nt), 'dt', kgrid.dt};
+if kgrid.dim >= 2
+    kgrid_args = [kgrid_args, {'Ny', int64(kgrid.Ny), 'dy', kgrid.dy}];
+end
+if kgrid.dim >= 3
+    kgrid_args = [kgrid_args, {'Nz', int64(kgrid.Nz), 'dz', kgrid.dz}];
+end
+k_py = py.dict(pyargs(kgrid_args{:}));
+
 m_py = py.dict(pyargs( ...
     'sound_speed', toNumpy(getField(medium, {'sound_speed','c0'}, [])), ...
     'density',     toNumpy(getField(medium, {'density','rho0'}, 1000)), ...
     'alpha_coeff', toNumpy(getField(medium, {'alpha_coeff'}, 0)), ...
     'alpha_power', toNumpy(getField(medium, {'alpha_power'}, 1.5)), ...
     'BonA',        toNumpy(getField(medium, {'BonA'}, 0))));
-s_py = py.dict(pyargs( ...
+
+% Build source dict with velocity components for each dimension
+source_args = { ...
     'p0',     toNumpy(getField(source, {'p0'}, 0)), ...
     'p_mask', toNumpy(getField(source, {'p_mask'}, 0)), ...
     'p',      toNumpy(getField(source, {'p'}, 0)), ...
     'p_mode', getField(source, {'p_mode'}, 'additive'), ...
     'u_mask', toNumpy(getField(source, {'u_mask'}, 0)), ...
     'ux',     toNumpy(getField(source, {'ux'}, 0)), ...
-    'u_mode', getField(source, {'u_mode'}, 'additive')));
+    'u_mode', getField(source, {'u_mode'}, 'additive')};
+if kgrid.dim >= 2
+    source_args = [source_args, {'uy', toNumpy(getField(source, {'uy'}, 0))}];
+end
+if kgrid.dim >= 3
+    source_args = [source_args, {'uz', toNumpy(getField(source, {'uz'}, 0))}];
+end
+s_py = py.dict(pyargs(source_args{:}));
+
 d_py = py.dict(pyargs('mask', toNumpy(getField(sensor, {'mask'}, 1))));
 
 % Run simulation and convert result back to MATLAB double
