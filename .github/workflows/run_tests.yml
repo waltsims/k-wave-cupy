@@ -9,12 +9,11 @@ on:
        - main
 
 jobs:
-  unit-tests-matlab-baseline:
-    name: Unit tests (MATLAB baseline - 1D only)
+  unit-tests-matlab:
+    name: Unit tests (MATLAB - 1D)
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up MATLAB
         uses: matlab-actions/setup-matlab@v2
@@ -22,59 +21,27 @@ jobs:
           products: Signal_Processing_Toolbox
           cache: true
 
-      - name: Run unit tests (1D only)
+      - name: Run 1D unit tests and generate reference data
         uses: matlab-actions/run-command@v2
         with:
           command: |
-            addpath('${{ github.workspace }}/k-Wave');
-            cd('${{ github.workspace }}/k-Wave/testing/unit');
-            test_struct = runUnitTests('kspaceFirstOrder1D',false);
-            save('test_struct.mat', 'test_struct');
-          startup-options: -nojvm -logfile output.log
-
-      - name: Create artifact
-        uses: matlab-actions/run-command@v2
-        with:
-          command: |
-            addpath('${{ github.workspace }}/k-Wave/testing');
-            cd('${{ github.workspace }}/k-Wave/testing/unit');
-            load('test_struct.mat', 'test_struct');
-            save_artifact(test_struct);
-          startup-options: -nojvm 
-
-      - name: Upload test results
-        uses: actions/upload-artifact@v4
-        with:
-          name: unit_test_results_matlab
-          path: ${{ github.workspace }}/k-Wave/testing/unit/test_results.json
+            addpath('k-Wave');
+            cd('k-Wave/testing/unit');
+            runUnitTests('kspaceFirstOrder1D', false);
+            kspaceFirstOrder1D_compare_plane_waves(false, false);
 
       - name: Upload reference data
         uses: actions/upload-artifact@v4
         with:
           name: reference_data
-          path: ${{ github.workspace }}/k-Wave/testing/unit/kspaceFirstOrder1D_reference_data.mat
+          path: k-Wave/testing/unit/kspaceFirstOrder1D_reference_data.mat
 
-      - name: Test results
-        uses: matlab-actions/run-command@v2
-        with:
-          command: |
-            addpath('${{ github.workspace }}/k-Wave/testing');
-            cd('${{ github.workspace }}/k-Wave/testing/unit');
-            load('test_struct.mat', 'test_struct');
-            show_test_results(test_struct);
-            disp('  ');
-            disp('NOTE:');
-            disp('Test output details are in the "Run unit tests" section of the workflow.');
-            disp('You can also download a JSON summary from the "Upload Artifact" section in your CI logs or dashboard.');
-          startup-options: -nojvm
-
-  unit-tests-python-backend:
-    name: Unit tests (Python backend - 1D)
+  python-backend-parity:
+    name: Python backend parity (1D comprehensive)
     runs-on: ubuntu-latest
-    needs: unit-tests-matlab-baseline
+    needs: unit-tests-matlab
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -82,11 +49,8 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install numpy
-          echo "PYTHON_PATH=${{ steps.setup-python.outputs.python-path }}" >> $GITHUB_ENV
+      - name: Install NumPy
+        run: pip install numpy
 
       - name: Set up MATLAB
         uses: matlab-actions/setup-matlab@v2
@@ -98,71 +62,29 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: reference_data
-          path: ${{ github.workspace }}/k-Wave/testing/unit
+          path: k-Wave/testing/unit
 
-      - name: Run unit tests (1D with Python backend)
+      - name: Run Python backend parity test
         uses: matlab-actions/run-command@v2
         env:
           PYTHON_PATH: ${{ steps.setup-python.outputs.python-path }}
         with:
           command: |
-            % Configure Python environment using path from setup-python action
-            py_path = getenv('PYTHON_PATH');
-            disp(['Using Python at: ' py_path]);
-            pyenv('Version', py_path);
-            disp(['Python version: ' char(py.sys.version)]);
-            disp(['NumPy version: ' char(py.numpy.version.version)]);
-            addpath('${{ github.workspace }}/k-Wave');
-            addpath('${{ github.workspace }}/tests/shims');
-            cd('${{ github.workspace }}/k-Wave/testing/unit');
-            test_struct = runUnitTests('kspaceFirstOrder1D',false);
-            save('test_struct.mat', 'test_struct');
-          startup-options: -logfile output.log
-
-      - name: Upload MATLAB log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: matlab_output_log
-          path: /tmp/run_matlab_command-*/output.log
-
-      - name: Create artifact
-        uses: matlab-actions/run-command@v2
-        with:
-          command: |
-            addpath('${{ github.workspace }}/k-Wave/testing');
-            cd('${{ github.workspace }}/k-Wave/testing/unit');
-            load('test_struct.mat', 'test_struct');
-            save_artifact(test_struct);
-          startup-options: -nojvm
-
-      - name: Upload test results
-        uses: actions/upload-artifact@v4
-        with:
-          name: unit_test_results_python_backend
-          path: ${{ github.workspace }}/k-Wave/testing/unit/test_results.json
-
-      - name: Test results
-        uses: matlab-actions/run-command@v2
-        with:
-          command: |
-            addpath('${{ github.workspace }}/k-Wave/testing');
-            cd('${{ github.workspace }}/k-Wave/testing/unit');
-            load('test_struct.mat', 'test_struct');
-            show_test_results(test_struct);
-            disp('  ');
-            disp('NOTE:');
-            disp('Test output details are in the "Run unit tests" section of the workflow.');
-            disp('You can also download a JSON summary from the "Upload Artifact" section in your CI logs or dashboard.');
-          startup-options: -nojvm
+            pyenv('Version', getenv('PYTHON_PATH'));
+            addpath('k-Wave');
+            addpath('tests/shims');
+            cd('k-Wave/testing/unit');
+            result = kspaceFirstOrder1D_compare_plane_waves(false, false);
+            if ~result
+              error('Python backend parity test failed');
+            end
 
   regression-tests:
     name: Regression tests
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'  # Only run on main branch
+    if: github.ref == 'refs/heads/main'
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up MATLAB
         uses: matlab-actions/setup-matlab@v2
@@ -170,51 +92,11 @@ jobs:
           products: Signal_Processing_Toolbox
           cache: true
 
-      - name: Generate data
+      - name: Generate and run regression tests
         uses: matlab-actions/run-command@v2
         with:
           command: |
-            addpath('${{ github.workspace }}/k-Wave');
-            cd('${{ github.workspace }}/k-Wave/testing/regression');
-            generateRegressionData
-          startup-options: -nojvm 
-
-      - name: Run regression tests
-        uses: matlab-actions/run-command@v2
-        with:
-          command: |
-            addpath('${{ github.workspace }}/k-Wave');
-            cd('${{ github.workspace }}/k-Wave/testing/regression');
-            test_struct = runRegressionTests('${{ github.workspace }}/k-Wave/testing/regression',false);
-            save('test_struct.mat', 'test_struct');
-          startup-options: -nojvm 
-
-      - name: Create artifact
-        uses: matlab-actions/run-command@v2
-        with:
-          command: |
-            addpath('${{ github.workspace }}/k-Wave/testing');
-            cd('${{ github.workspace }}/k-Wave/testing/regression');
-            load('test_struct.mat', 'test_struct');
-            save_artifact(test_struct);
-          startup-options: -nojvm
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: regression_test_results
-          path: ${{ github.workspace }}/k-Wave/testing/regression/test_results.json
-
-      - name: Test results
-        uses: matlab-actions/run-command@v2
-        with:
-          command: |
-            addpath('${{ github.workspace }}/k-Wave/testing');
-            cd('${{ github.workspace }}/k-Wave/testing/regression');
-            load('test_struct.mat', 'test_struct');
-            show_test_results(test_struct);
-            disp('  ');
-            disp('NOTE:');
-            disp('Test output details are in the "Run regression tests" section of the workflow.');
-            disp('You can also download a JSON summary from the "Upload Artifact" section in your CI logs or dashboard.');
-          startup-options: -nojvm 
+            addpath('k-Wave');
+            cd('k-Wave/testing/regression');
+            generateRegressionData;
+            runRegressionTests(pwd, false);

@@ -30,7 +30,18 @@ def simulate(kgrid, medium, source, sensor, backend="auto"):
 
     c0   = load_field(medium, ["sound_speed", "c0"])
     rho0 = load_field(medium, ["density", "rho0"], 1000.0)
-    mask = load_field(sensor, ["mask"], True, dtype=bool)
+    mask_raw = sensor.get("mask")
+    if mask_raw is None:
+        mask = xp.ones(Nx, dtype=bool)  # Record all points by default
+    else:
+        mask = xp.asarray(mask_raw, dtype=bool).flatten(order="F")
+        if mask.size == 1:
+            mask = xp.full(Nx, bool(mask[0]), dtype=bool)
+
+    # Validate mask shape
+    if mask.shape != (Nx,):
+        raise ValueError(f"Sensor mask shape {mask.shape} doesn't match grid size {Nx}")
+
     p = xp.zeros(Nx, dtype=float)
 
     # Density at staggered grid points (x + dx/2) for velocity update
