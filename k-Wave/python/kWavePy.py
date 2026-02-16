@@ -108,8 +108,19 @@ def _build_physics_ops(medium, k, rho0, xp):
     """Build composable physics operators (return 0/identity when disabled)."""
     absorption, dispersion = _build_absorption_ops(medium, k, rho0, xp)
 
-    BonA = medium.get("BonA", 0)
-    if _is_nonzero(BonA):
+    Nx = k.size
+    def _expand_to_grid(val, name):
+        arr = xp.array(val, dtype=float).flatten(order="F")
+        if arr.size == 1:
+            return xp.full(Nx, float(arr[0]), dtype=float)
+        if arr.size == Nx:
+            return arr
+        raise ValueError(f"{name} length {arr.size} incompatible with grid size {Nx}")
+
+    BonA_raw = medium.get("BonA", 0)
+    BonA = _expand_to_grid(BonA_raw, "BonA") if _is_nonzero(BonA_raw) else None
+
+    if BonA is not None:
         # Nonlinear acoustics: pressure depends on rho^2
         nonlinearity = lambda rho: BonA * rho**2 / (2 * rho0)
         nonlinear_factor = lambda rho: (2*rho + rho0) / rho0
@@ -176,15 +187,32 @@ def _build_source_ops(source, c0, dt, dx, Nx, source_kappa, xp):
 
 def _build_absorption_ops(medium, k, rho0, xp):
     """Build absorption and dispersion operators for power-law attenuation."""
-    alpha_coeff = medium.get("alpha_coeff", 0)
-    alpha_power = medium.get("alpha_power", 1.5)
+    Nx = k.size
 
-    if not _is_nonzero(alpha_coeff):
+    def _expand_to_grid(val, name):
+        """Ensure medium parameters are 1D arrays matching the grid length."""
+        arr = xp.array(val, dtype=float).flatten(order="F")
+        if arr.size == 1:
+            return xp.full(Nx, float(arr[0]), dtype=float)
+        if arr.size == Nx:
+            return arr
+        raise ValueError(f"{name} length {arr.size} incompatible with grid size {Nx}")
+
+    alpha_coeff_raw = medium.get("alpha_coeff", 0)
+    alpha_power_raw = medium.get("alpha_power", 1.5)
+
+    if not _is_nonzero(alpha_coeff_raw):
         return lambda duxdx: 0, lambda rho: 0
+
+    alpha_coeff = _expand_to_grid(alpha_coeff_raw, "alpha_coeff")
+    c0 = _expand_to_grid(medium.get("sound_speed", medium.get("c0")), "sound_speed")
+
+    # alpha_power is expected to be a scalar; fall back to first element if an array is passed
+    alpha_power_arr = xp.array(alpha_power_raw, dtype=float).flatten(order="F")
+    alpha_power = float(alpha_power_arr[0])
 
     # Convert from dB/(MHz^y cm) to Nepers/((rad/s)^y m)
     alpha_np = 100 * alpha_coeff * (1e-6 / (2 * np.pi))**alpha_power / (20 * np.log10(np.e))
-    c0 = xp.atleast_1d(xp.array(medium.get("sound_speed", medium.get("c0"))))
 
     spectral_diff = lambda f, op: xp.real(xp.fft.ifft(op * xp.fft.fft(f)))
 
