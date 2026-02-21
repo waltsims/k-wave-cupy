@@ -24,12 +24,23 @@ def _is_enabled(x):
 def _to_cpu(x):
     return x.get() if hasattr(x, "get") else x
 
+# MATLAB interop: MATLAB uses Fortran (column-major) memory order; these two helpers
+# encapsulate every flatten/reshape that must respect that layout.
+def _f_flatten(arr):
+    """Flatten array in Fortran (column-major) order to match MATLAB memory layout."""
+    return arr.flatten(order="F")
+
+def _f_reshape(arr, shape):
+    """Reshape array in Fortran (column-major) order to match MATLAB indexing."""
+    return arr.reshape(shape, order="F")
+
 def _expand_to_grid(val, grid_shape, xp, name="parameter"):
     if val is None: raise ValueError(f"Missing required parameter: {name}")
-    arr = xp.array(val, dtype=float).flatten(order="F")
+    arr = xp.array(val, dtype=float)
+    arr = _f_flatten(arr)
     grid_size = int(np.prod(grid_shape))
     if arr.size == 1: return xp.full(grid_shape, float(arr[0]), dtype=float)
-    if arr.size == grid_size: return arr.reshape(grid_shape, order="F")
+    if arr.size == grid_size: return _f_reshape(arr, grid_shape)
     raise ValueError(f"{name} size {arr.size} incompatible with grid size {grid_size}")
 
 # =============================================================================
@@ -114,11 +125,11 @@ class Simulation:
         if mask_raw is None:
             self.mask = xp.ones(self.grid_shape, dtype=bool)
         else:
-            self.mask = xp.array(mask_raw, dtype=bool, copy=True).flatten(order="F")
+            self.mask = _f_flatten(xp.array(mask_raw, dtype=bool, copy=True))
             if self.mask.size == 1:
                 self.mask = xp.full(self.grid_shape, bool(self.mask[0]), dtype=bool)
             else:
-                self.mask = self.mask.reshape(self.grid_shape, order="F")
+                self.mask = _f_reshape(self.mask, self.grid_shape)
         self.n_sensor_points = int(xp.sum(self.mask))
 
         # MATLAB uses 1-based indexing; convert to Python's 0-based for array slicing
@@ -259,9 +270,9 @@ class Simulation:
             if not (_is_enabled(mask_raw) and _is_enabled(signal_raw)):
                 return (lambda t, field, dim: field) if is_pressure else (lambda t, field: field)
 
-            mask = xp.array(mask_raw, dtype=bool).flatten(order="F")
+            mask = _f_flatten(xp.array(mask_raw, dtype=bool))
             if mask.size == 1:
-                mask = xp.full(self.grid_shape, bool(mask[0]), dtype=bool).flatten(order="F")
+                mask = _f_flatten(xp.full(self.grid_shape, bool(mask[0]), dtype=bool))
             n_src = int(xp.sum(mask))
 
             # Handle signal: can be 1D (Nt,) or 2D (n_src, Nt)
@@ -272,11 +283,11 @@ class Simulation:
                 signal_len = signal.shape[1]
             else:
                 # 2D signal: (n_src, Nt) in Fortran order
-                signal = signal_arr.reshape(-1, signal_arr.shape[-1], order="F") if signal_arr.ndim > 2 else signal_arr
+                signal = _f_reshape(signal_arr, (-1, signal_arr.shape[-1])) if signal_arr.ndim > 2 else signal_arr
                 signal_len = signal.shape[1]
 
             # Scale factor depends on mode
-            c0_flat = self.c0.flatten(order="F")
+            c0_flat = _f_flatten(self.c0)
             c0_src = c0_flat[mask] if c0_flat.size > 1 else xp.full(n_src, float(c0_flat))
             if mode == "dirichlet":
                 scale = 1.0 / scale_dirichlet(c0_src)
@@ -292,22 +303,22 @@ class Simulation:
 
             def dirichlet(t, field):
                 if t >= signal_len: return field
-                flat = field.flatten(order="F")
+                flat = _f_flatten(field)
                 flat[mask] = get_val(t)
-                return flat.reshape(self.grid_shape, order="F")
+                return _f_reshape(flat, self.grid_shape)
 
             def additive(t, field):
                 if t >= signal_len: return field
                 src = xp.zeros(grid_size, dtype=field.dtype)
                 src[mask] = get_val(t)
-                src = src.reshape(self.grid_shape, order="F")
+                src = _f_reshape(src, self.grid_shape)
                 return field + self._diff(src, self.source_kappa, apply_kappa=False)
 
             def additive_raw(t, field):
                 if t >= signal_len: return field
-                flat = field.flatten(order="F")
+                flat = _f_flatten(field)
                 flat[mask] += get_val(t)
-                return flat.reshape(self.grid_shape, order="F")
+                return _f_reshape(flat, self.grid_shape)
 
             base = {"dirichlet": dirichlet, "additive": additive}.get(mode, additive_raw)
             return (lambda t, field, dim: base(t, field) if dim == 0 else field) if is_pressure else base
