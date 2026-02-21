@@ -121,6 +121,14 @@ class Simulation:
                 self.mask = self.mask.reshape(self.grid_shape, order="F")
         self.n_sensor_points = int(xp.sum(self.mask))
 
+        # Parse sensor.record
+        record = _attr(self.sensor, 'record', ('p',))
+        if isinstance(record, str): record = (record,)
+        self.record = set(record)
+        if 'u' in self.record:
+            self.record.discard('u')
+            self.record.update(['ux', 'uy', 'uz'][:self.ndim])
+
         # MATLAB uses 1-based indexing; convert to Python's 0-based for array slicing
         record_start_raw = _attr(self.sensor, 'record_start_index', 1)
         self.record_start_index = int(record_start_raw) - 1
@@ -338,6 +346,10 @@ class Simulation:
 
         # Sensor data storage (sized based on record_start_index)
         self.sensor_data = xp.zeros((self.n_sensor_points, self.num_recorded_time_points), dtype=float)
+        self.sensor_data_u = {}
+        for v in ['ux', 'uy', 'uz'][:self.ndim]:
+            if v in self.record:
+                self.sensor_data_u[v] = xp.zeros((self.n_sensor_points, self.num_recorded_time_points), dtype=float)
 
         # Initial pressure source (p0)
         p0_raw = _attr(self.source, 'p0', 0)
@@ -393,6 +405,9 @@ class Simulation:
         if self.t >= self.record_start_index:
             file_index = self.t - self.record_start_index
             self.sensor_data[:, file_index] = self.p[self.mask]
+            for i, v in enumerate(['ux', 'uy', 'uz'][:self.ndim]):
+                if v in self.sensor_data_u:
+                    self.sensor_data_u[v][:, file_index] = self.u[i][self.mask]
         self.t += 1
         return self
 
@@ -402,7 +417,11 @@ class Simulation:
             self.setup()
         while self.t < self.Nt:
             self.step()
-        return {"sensor_data": _to_cpu(self.sensor_data), "pressure": _to_cpu(self.p)}
+        p_data = _to_cpu(self.sensor_data)
+        results = {"p": p_data, "sensor_data": p_data, "pressure": _to_cpu(self.p)}
+        for v, data in self.sensor_data_u.items():
+            results[v] = _to_cpu(data)
+        return results
 
     # Helper methods
     def _diff(self, f, op, apply_kappa=True):
