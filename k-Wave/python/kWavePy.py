@@ -126,6 +126,7 @@ class Simulation:
         if isinstance(record, str): record = (record,)
         self.record = set(record)
         if 'u' in self.record:
+        if 'u' in self.record:
             self.record.discard('u')
             self.record.update(['ux', 'uy', 'uz'][:self.ndim])
 
