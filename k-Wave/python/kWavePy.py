@@ -24,14 +24,10 @@ def _is_enabled(x):
 def _to_cpu(x):
     return x.get() if hasattr(x, "get") else x
 
-# MATLAB interop: MATLAB uses Fortran (column-major) memory order; these two helpers
-# encapsulate every flatten/reshape that must respect that layout.
 def _f_flatten(arr):
-    """Flatten array in Fortran (column-major) order to match MATLAB memory layout."""
     return arr.flatten(order="F")
 
 def _f_reshape(arr, shape):
-    """Reshape array in Fortran (column-major) order to match MATLAB indexing."""
     return arr.reshape(shape, order="F")
 
 def _expand_to_grid(val, grid_shape, xp, name="parameter"):
