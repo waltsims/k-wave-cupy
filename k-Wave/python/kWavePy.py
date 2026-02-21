@@ -127,7 +127,10 @@ class Simulation:
         self.record = set(record)
         if 'u' in self.record:
             self.record.discard('u')
-            self.record.update(['ux', 'uy', 'uz'][:self.ndim])
+            self.record.update(f'u{a}' for a in 'xyz'[:self.ndim])
+        if 'u_staggered' in self.record:
+            self.record.discard('u_staggered')
+            self.record.update(f'u{a}_staggered' for a in 'xyz'[:self.ndim])
 
         # MATLAB uses 1-based indexing; convert to Python's 0-based for array slicing
         record_start_raw = _attr(self.sensor, 'record_start_index', 1)
@@ -347,9 +350,16 @@ class Simulation:
         # Sensor data storage (sized based on record_start_index)
         self.sensor_data = xp.zeros((self.n_sensor_points, self.num_recorded_time_points), dtype=float)
         self.sensor_data_u = {}
-        for v in ['ux', 'uy', 'uz'][:self.ndim]:
-            if v in self.record:
-                self.sensor_data_u[v] = xp.zeros((self.n_sensor_points, self.num_recorded_time_points), dtype=float)
+        for a in 'xyz'[:self.ndim]:
+            for suffix in ('', '_staggered'):
+                v = f'u{a}{suffix}'
+                if v in self.record:
+                    self.sensor_data_u[v] = xp.zeros((self.n_sensor_points, self.num_recorded_time_points), dtype=float)
+
+        # Spatial shift operators for colocating velocity to pressure grid
+        if any(f'u{a}' in self.record for a in 'xyz'[:self.ndim]):
+            self.unstagger_ops = [xp.exp(-1j * self.k_list[ax] * self.spacing[ax] / 2)
+                                  for ax in range(self.ndim)]
 
         # Initial pressure source (p0)
         p0_raw = _attr(self.source, 'p0', 0)
@@ -405,9 +415,12 @@ class Simulation:
         if self.t >= self.record_start_index:
             file_index = self.t - self.record_start_index
             self.sensor_data[:, file_index] = self.p[self.mask]
-            for i, v in enumerate(['ux', 'uy', 'uz'][:self.ndim]):
-                if v in self.sensor_data_u:
-                    self.sensor_data_u[v][:, file_index] = self.u[i][self.mask]
+            for i, a in enumerate('xyz'[:self.ndim]):
+                if f'u{a}' in self.sensor_data_u:  # colocated
+                    shifted = xp.real(xp.fft.ifftn(self.unstagger_ops[i] * xp.fft.fftn(self.u[i])))
+                    self.sensor_data_u[f'u{a}'][:, file_index] = shifted[self.mask]
+                if f'u{a}_staggered' in self.sensor_data_u:  # raw staggered
+                    self.sensor_data_u[f'u{a}_staggered'][:, file_index] = self.u[i][self.mask]
         self.t += 1
         return self
 
@@ -450,6 +463,34 @@ class Simulation:
         k_mag_sq = sum(xp.fft.fftshift(k)**2 for k in self.k_list)
         k_mag = xp.sqrt(k_mag_sq)
         return xp.fft.ifftshift(xp.where(k_mag == 0, 0, k_mag**power))
+
+# =============================================================================
+# Post-Processing
+# =============================================================================
+
+def acoustic_intensity(result):
+    """Compute acoustic intensity from simulation result dict.
+
+    Temporally shifts velocity forward by dt/2 (Fourier interpolant)
+    to align with pressure, then computes I = p * u per component.
+
+    Returns dict with Ix, Iy, Iz, Ix_avg, Iy_avg, Iz_avg.
+    """
+    p = result['p']
+    n_time = p.shape[-1]
+    freq = 2 * np.pi * np.arange(-(n_time // 2), n_time - n_time // 2) / n_time
+    freq[n_time // 2] = 0  # zero Nyquist to avoid aliasing artifacts
+    shift_op = np.fft.ifftshift(np.exp(1j * freq * 0.5))
+
+    out = {}
+    for a in 'xyz':
+        u = result.get(f'u{a}')
+        if u is None:
+            break
+        u_shifted = np.real(np.fft.ifft(shift_op * np.fft.fft(u, axis=-1), axis=-1))
+        out[f'I{a}'] = p * u_shifted
+        out[f'I{a}_avg'] = np.mean(p * u_shifted, axis=-1)
+    return out
 
 # =============================================================================
 # MATLAB Interop

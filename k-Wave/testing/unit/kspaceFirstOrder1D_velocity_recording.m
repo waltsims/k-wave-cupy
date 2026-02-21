@@ -1,7 +1,7 @@
 function test_pass = kspaceFirstOrder1D_velocity_recording(plot_comparisons, plot_simulations)
 % DESCRIPTION:
 %     Compare velocity recording between MATLAB and Python backends.
-%     Tests that sensor.record = {'p', 'u'} produces matching ux outputs.
+%     Tests both staggered ('u') and colocated ('u_non_staggered') velocity.
 %
 % ABOUT:
 %     author      - Walter
@@ -33,7 +33,7 @@ source.p0 = zeros(Nx, 1);
 source.p0(Nx/2) = 1;
 
 sensor.mask   = ones(Nx, 1);
-sensor.record = {'p', 'u'};
+sensor.record = {'p', 'u', 'u_non_staggered'};
 
 % =========================================================================
 % MATLAB REFERENCE
@@ -57,18 +57,26 @@ py_result = kspaceFirstOrderPy(kgrid, medium, source, sensor, ...
 
 % Pressure
 diff_p = max(abs(mat.p(:) - py_result.p(:)));
-fprintf('  Pressure max diff:  %e\n', diff_p);
+fprintf('  Pressure max diff:              %e\n', diff_p);
 if diff_p > comparison_thresh
     test_pass = false;
     fprintf('  FAILED: pressure exceeds threshold\n');
 end
 
-% Velocity (ux)
+% Staggered velocity (ux)
 diff_ux = max(abs(mat.ux(:) - py_result.ux(:)));
-fprintf('  Velocity max diff:  %e\n', diff_ux);
+fprintf('  Staggered velocity max diff:    %e\n', diff_ux);
 if diff_ux > comparison_thresh
     test_pass = false;
-    fprintf('  FAILED: ux exceeds threshold\n');
+    fprintf('  FAILED: staggered ux exceeds threshold\n');
+end
+
+% Colocated velocity (ux_non_staggered)
+diff_ux_ns = max(abs(mat.ux_non_staggered(:) - py_result.ux_non_staggered(:)));
+fprintf('  Colocated velocity max diff:    %e\n', diff_ux_ns);
+if diff_ux_ns > comparison_thresh
+    test_pass = false;
+    fprintf('  FAILED: colocated ux exceeds threshold\n');
 end
 
 % =========================================================================
@@ -77,12 +85,12 @@ end
 
 if plot_comparisons
     figure;
-    subplot(2,3,1); imagesc(mat.p);      title('MATLAB p');
-    subplot(2,3,2); imagesc(py_result.p); title('Python p');
-    subplot(2,3,3); imagesc(mat.p - py_result.p); title('Diff p'); colorbar;
-    subplot(2,3,4); imagesc(mat.ux);      title('MATLAB ux');
-    subplot(2,3,5); imagesc(py_result.ux); title('Python ux');
-    subplot(2,3,6); imagesc(mat.ux - py_result.ux); title('Diff ux'); colorbar;
+    subplot(2,3,1); imagesc(mat.ux);      title('MATLAB ux (staggered)');
+    subplot(2,3,2); imagesc(py_result.ux); title('Python ux (staggered)');
+    subplot(2,3,3); imagesc(mat.ux - py_result.ux); title('Diff staggered'); colorbar;
+    subplot(2,3,4); imagesc(mat.ux_non_staggered);      title('MATLAB ux\_ns');
+    subplot(2,3,5); imagesc(py_result.ux_non_staggered); title('Python ux\_ns');
+    subplot(2,3,6); imagesc(mat.ux_non_staggered - py_result.ux_non_staggered); title('Diff colocated'); colorbar;
 end
 
 end

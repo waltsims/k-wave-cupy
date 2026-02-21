@@ -31,6 +31,7 @@ tests_1d = {
     'kspaceFirstOrder1D_check_source_scaling_ux'
     'kspaceFirstOrder1D_p0_vs_two_clicks'
     'kspaceFirstOrder1D_velocity_recording'
+    'kspaceFirstOrder1D_acoustic_intensity'
 };
 
 tests_2d = {
