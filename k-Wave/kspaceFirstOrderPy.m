@@ -14,6 +14,7 @@ p = inputParser; p.KeepUnmatched = true;
 addParameter(p, 'Backend', 'auto');
 addParameter(p, 'PMLSize', 20);
 addParameter(p, 'PMLAlpha', 2);
+addParameter(p, 'Smooth', true);
 parse(p, varargin{:});
 
 % Persistent variable ensures Python module loads once per MATLAB session
@@ -54,9 +55,17 @@ m_py = py.dict(pyargs( ...
     'alpha_power', toNumpy(getField(medium, {'alpha_power'}, 1.5)), ...
     'BonA',        toNumpy(getField(medium, {'BonA'}, 0))));
 
+% Smooth initial pressure distribution (matches MATLAB default: Blackman window, restore max)
+p0_val = getField(source, {'p0'}, 0);
+smooth_flags = p.Results.Smooth;
+smooth_p0 = logical(smooth_flags(1));
+if smooth_p0 && ~isscalar(p0_val) && any(p0_val(:) ~= 0)
+    p0_val = smooth(p0_val, true);
+end
+
 % Build source dict with velocity components for each dimension
 source_args = { ...
-    'p0',     toNumpy(getField(source, {'p0'}, 0)), ...
+    'p0',     toNumpy(p0_val), ...
     'p_mask', toNumpy(getField(source, {'p_mask'}, 0)), ...
     'p',      toNumpy(getField(source, {'p'}, 0)), ...
     'p_mode', getField(source, {'p_mode'}, 'additive'), ...

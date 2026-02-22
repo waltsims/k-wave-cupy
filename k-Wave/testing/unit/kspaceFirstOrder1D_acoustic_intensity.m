@@ -55,7 +55,7 @@ Ix_avg_matlab = mean(Ix_matlab, 2);
 % =========================================================================
 
 py_result = kspaceFirstOrderPy(kgrid, medium, source, sensor, ...
-    'PMLSize', 0, 'PMLAlpha', 0);
+    'PMLSize', 0, 'PMLAlpha', 0, 'Smooth', false);
 
 % Call Python acoustic_intensity helper
 toNumpy = @(x) py.numpy.array(double(x), pyargs('order', 'F'));
