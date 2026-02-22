@@ -156,8 +156,8 @@ class Simulation:
             self.record.discard('u_staggered')
             self.record.update(f'u{a}_staggered' for a in 'xyz'[:self.ndim])
 
-        # Expand shorthand velocity aggregates: u_max → ux_max, uy_max, uz_max
-        for suffix in ('_max', '_min', '_rms'):
+        # Expand shorthand velocity keys: u_max → ux_max, uy_max, uz_max
+        for suffix in ('_max', '_min', '_rms', '_final'):
             if f'u{suffix}' in self.record:
                 self.record.discard(f'u{suffix}')
                 self.record.update(f'u{a}{suffix}' for a in 'xyz'[:self.ndim])
@@ -521,6 +521,13 @@ class Simulation:
         result.update(_compute_aggregates(result, self.ndim))
         if 'p' in result and any(f'u{a}' in result for a in 'xyz'):
             result.update(acoustic_intensity(result))
+        # Final-state snapshots: full grid fields at last timestep
+        if 'p_final' in self.record:
+            result['p_final'] = _to_cpu(self.p)
+        if any(f'u{a}_final' in self.record for a in 'xyz'):
+            for i, a in enumerate('xyz'[:self.ndim]):
+                if f'u{a}_final' in self.record:
+                    result[f'u{a}_final'] = _to_cpu(self.u[i])
         return {k: v for k, v in result.items() if k in self.record}
 
     # Helper methods

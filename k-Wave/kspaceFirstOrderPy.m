@@ -115,7 +115,7 @@ if ~isempty(record)
     sensor_data = struct();
     vel_names = {'ux', 'uy', 'uz'};
     vel_ns_names = {'ux_non_staggered', 'uy_non_staggered', 'uz_non_staggered'};
-    agg_suffixes = {'_max', '_min', '_rms'};
+    agg_suffixes = {'_max', '_min', '_rms', '_final'};
     for i = 1:numel(record)
         if strcmp(record{i}, 'u')
             for d = 1:kgrid.dim
