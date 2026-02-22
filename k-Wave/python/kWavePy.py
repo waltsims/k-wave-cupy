@@ -156,6 +156,28 @@ class Simulation:
             self.record.discard('u_staggered')
             self.record.update(f'u{a}_staggered' for a in 'xyz'[:self.ndim])
 
+        # Expand shorthand velocity aggregates: u_max → ux_max, uy_max, uz_max
+        for suffix in ('_max', '_min', '_rms'):
+            if f'u{suffix}' in self.record:
+                self.record.discard(f'u{suffix}')
+                self.record.update(f'u{a}{suffix}' for a in 'xyz'[:self.ndim])
+
+        # Expand aggregate keys → ensure base time-series is recorded
+        for key in list(self.record):
+            for suffix in ('_max', '_min', '_rms'):
+                if key.endswith(suffix):
+                    self.record.add(key[:-len(suffix)])  # p_rms → p, ux_max → ux
+
+        # Intensity requires both p and u time-series
+        if 'I' in self.record or 'I_avg' in self.record:
+            self.record.update(['p'] + [f'u{a}' for a in 'xyz'[:self.ndim]])
+        if 'I' in self.record:
+            self.record.discard('I')
+            self.record.update(f'I{a}' for a in 'xyz'[:self.ndim])
+        if 'I_avg' in self.record:
+            self.record.discard('I_avg')
+            self.record.update(f'I{a}_avg' for a in 'xyz'[:self.ndim])
+
         # MATLAB uses 1-based indexing; convert to Python's 0-based for array slicing
         record_start_raw = _attr(self.sensor, 'record_start_index', 1)
         self.record_start_index = int(record_start_raw) - 1
@@ -495,7 +517,11 @@ class Simulation:
             self.setup()
         while self.t < self.Nt:
             self.step()
-        return {k: _to_cpu(v) for k, v in self.sensor_data.items()}
+        result = {k: _to_cpu(v) for k, v in self.sensor_data.items()}
+        result.update(_compute_aggregates(result, self.ndim))
+        if 'p' in result and any(f'u{a}' in result for a in 'xyz'):
+            result.update(acoustic_intensity(result))
+        return {k: v for k, v in result.items() if k in self.record}
 
     # Helper methods
     def _diff(self, f, op, apply_kappa=True):
@@ -528,6 +554,18 @@ class Simulation:
 # =============================================================================
 # Post-Processing
 # =============================================================================
+
+def _compute_aggregates(result, ndim):
+    """Compute max/min/rms from time-series. Returns only computed keys."""
+    out = {}
+    for prefix in ['p'] + [f'u{a}' for a in 'xyz'[:ndim]]:
+        ts = result.get(prefix)
+        if ts is None:
+            continue
+        out[f'{prefix}_max'] = np.max(ts, axis=-1)
+        out[f'{prefix}_min'] = np.min(ts, axis=-1)
+        out[f'{prefix}_rms'] = np.sqrt(np.mean(ts ** 2, axis=-1))
+    return out
 
 def acoustic_intensity(result):
     """Compute acoustic intensity from simulation result dict.

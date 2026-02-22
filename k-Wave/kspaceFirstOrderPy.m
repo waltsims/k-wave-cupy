@@ -115,6 +115,7 @@ if ~isempty(record)
     sensor_data = struct();
     vel_names = {'ux', 'uy', 'uz'};
     vel_ns_names = {'ux_non_staggered', 'uy_non_staggered', 'uz_non_staggered'};
+    agg_suffixes = {'_max', '_min', '_rms'};
     for i = 1:numel(record)
         if strcmp(record{i}, 'u')
             for d = 1:kgrid.dim
@@ -123,6 +124,25 @@ if ~isempty(record)
         elseif strcmp(record{i}, 'u_non_staggered')
             for d = 1:kgrid.dim
                 sensor_data.(vel_ns_names{d}) = double(res{vel_names{d}});
+            end
+        elseif any(cellfun(@(s) strcmp(record{i}, ['u' s]), agg_suffixes))
+            % u_max → ux_max, uy_max, uz_max (same pattern as 'u' → 'ux','uy','uz')
+            suffix = record{i}(2:end);  % '_max', '_min', or '_rms'
+            for d = 1:kgrid.dim
+                key = [vel_names{d} suffix];
+                sensor_data.(key) = double(res{key});
+            end
+        elseif strcmp(record{i}, 'I')
+            ax = 'xyz';
+            for d = 1:kgrid.dim
+                key = ['I' ax(d)];
+                sensor_data.(key) = double(res{key});
+            end
+        elseif strcmp(record{i}, 'I_avg')
+            ax = 'xyz';
+            for d = 1:kgrid.dim
+                key = ['I' ax(d) '_avg'];
+                sensor_data.(key) = double(res{key});
             end
         else
             sensor_data.(record{i}) = double(res{record{i}});
