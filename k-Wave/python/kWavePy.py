@@ -83,9 +83,11 @@ class Simulation:
         self.rho0 = _expand_to_grid(_attr(self.medium, 'density', 1000.0), self.grid_shape, xp, "density")
         self.c_ref = float(xp.max(self.c0))
 
-        # CFL check
+        # CFL stability limit for pseudospectral methods on staggered grids:
+        # c * dt / dx <= 2/pi / sqrt(ndim)  (Tabei, Mast & Waag, JASA 2002, Eq. 11)
         cfl = self.c_ref * self.dt / min(self.spacing)
-        if cfl > 1.0: print(f"Warning: Unstable CFL={cfl:.2f}")
+        cfl_max = 2 / (np.pi * np.sqrt(self.ndim))
+        if cfl > cfl_max: print(f"Warning: Unstable CFL={cfl:.2f} (limit {cfl_max:.3f} for {self.ndim}D)")
 
         # Sensor mask
         self._setup_sensor_mask()
