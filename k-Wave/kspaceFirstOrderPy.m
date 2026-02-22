@@ -71,12 +71,51 @@ if kgrid.dim >= 3
 end
 s_py = py.dict(pyargs(source_args{:}));
 
-d_py = py.dict(pyargs('mask', toNumpy(getField(sensor, {'mask'}, 1)), ...
-    'record_start_index', int64(getField(sensor, {'record_start_index'}, 1))));
+sensor_args = {'mask', toNumpy(getField(sensor, {'mask'}, 1)), ...
+    'record_start_index', int64(getField(sensor, {'record_start_index'}, 1))};
+record = getField(sensor, {'record'}, {});
+if ~isempty(record)
+    % Map MATLAB flags to Python flags:
+    %   MATLAB 'u' (staggered)       → Python 'u_staggered'
+    %   MATLAB 'u_non_staggered'     → Python 'u' (colocated)
+    py_record = cell(size(record));
+    for i = 1:numel(record)
+        if strcmp(record{i}, 'u')
+            py_record{i} = 'u_staggered';
+        elseif strcmp(record{i}, 'u_non_staggered')
+            py_record{i} = 'u';
+        else
+            py_record{i} = record{i};
+        end
+    end
+    sensor_args = [sensor_args, {'record', py.tuple(py_record)}];
+end
+d_py = py.dict(pyargs(sensor_args{:}));
 
 % Run simulation and convert result back to MATLAB double
 res = kWavePy.simulate_from_dicts(k_py, m_py, s_py, d_py, pyargs('backend', char(p.Results.Backend)));
-sensor_data = double(res{'sensor_data'});
+
+% Return struct matching MATLAB convention when sensor.record is set
+if ~isempty(record)
+    sensor_data = struct();
+    vel_names = {'ux', 'uy', 'uz'};
+    vel_ns_names = {'ux_non_staggered', 'uy_non_staggered', 'uz_non_staggered'};
+    for i = 1:numel(record)
+        if strcmp(record{i}, 'u')
+            for d = 1:kgrid.dim
+                sensor_data.(vel_names{d}) = double(res{[vel_names{d} '_staggered']});
+            end
+        elseif strcmp(record{i}, 'u_non_staggered')
+            for d = 1:kgrid.dim
+                sensor_data.(vel_ns_names{d}) = double(res{vel_names{d}});
+            end
+        else
+            sensor_data.(record{i}) = double(res{record{i}});
+        end
+    end
+else
+    sensor_data = double(res{'p'});
+end
 end
 
 function value = getFieldValue(s, names, default)
