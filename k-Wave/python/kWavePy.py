@@ -124,6 +124,9 @@ class Simulation:
                 self.mask = self.mask.reshape(self.grid_shape, order="F")
         self.n_sensor_points = int(xp.sum(self.mask))
 
+        # Pre-compute F-order (column-major) sensor indices for MATLAB-compatible output
+        self._sensor_idx_f = xp.where(self.mask.flatten(order="F"))[0]
+
         # Parse sensor.record
         record = _attr(self.sensor, 'record', ('p',))
         if isinstance(record, str): record = (record,)
@@ -415,17 +418,18 @@ class Simulation:
                 self.rho_split[i] = self._p0_initial / (self.c0**2 * self.ndim)
                 self.u[i] = (self.dt / (2 * self.rho0_staggered[i])) * self._diff(self.p, self.op_grad_list[i])
 
-        # Record sensor data (only if past record_start_index)
+        # Record sensor data in F-order (column-major) for MATLAB compatibility
         if self.t >= self.record_start_index:
             file_index = self.t - self.record_start_index
+            idx = self._sensor_idx_f
             if 'p' in self.sensor_data:
-                self.sensor_data['p'][:, file_index] = self.p[self.mask]
+                self.sensor_data['p'][:, file_index] = self.p.flatten(order="F")[idx]
             for i, a in enumerate('xyz'[:self.ndim]):
                 if f'u{a}' in self.sensor_data:  # colocated
                     shifted = xp.real(xp.fft.ifftn(self.unstagger_ops[i] * xp.fft.fftn(self.u[i])))
-                    self.sensor_data[f'u{a}'][:, file_index] = shifted[self.mask]
+                    self.sensor_data[f'u{a}'][:, file_index] = shifted.flatten(order="F")[idx]
                 if f'u{a}_staggered' in self.sensor_data:  # raw staggered
-                    self.sensor_data[f'u{a}_staggered'][:, file_index] = self.u[i][self.mask]
+                    self.sensor_data[f'u{a}_staggered'][:, file_index] = self.u[i].flatten(order="F")[idx]
         self.t += 1
         return self
 

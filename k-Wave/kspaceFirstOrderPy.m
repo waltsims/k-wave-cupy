@@ -83,11 +83,18 @@ if kgrid.dim >= 3
 end
 s_py = py.dict(pyargs(source_args{:}));
 
-% Convert Cartesian sensor mask to binary if needed
+% Convert Cartesian sensor mask to binary with Delaunay interpolation (matches MATLAB default)
 sensor_mask = getField(sensor, {'mask'}, 1);
-order_index = [];
+cart_pos = [];
 if isCartesian(kgrid, sensor_mask)
-    [sensor_mask, order_index] = cart2grid(kgrid, sensor_mask);
+    cart_pos = sensor_mask;
+    if kgrid.dim == 1
+        sensor_mask = ones(kgrid.Nx, 1);
+    elseif kgrid.dim == 2
+        sensor_mask = ones(kgrid.Nx, kgrid.Ny);
+    elseif kgrid.dim == 3
+        sensor_mask = ones(kgrid.Nx, kgrid.Ny, kgrid.Nz);
+    end
 end
 
 sensor_args = {'mask', toNumpy(sensor_mask), ...
@@ -132,18 +139,48 @@ if ~isempty(record)
             sensor_data.(record{i}) = double(res{record{i}});
         end
     end
-    % Reorder Cartesian sensor data from grid order to original point order
-    if ~isempty(order_index)
+    % Interpolate full-grid data to Cartesian sensor positions
+    if ~isempty(cart_pos)
         for fn = fieldnames(sensor_data)'
-            sensor_data.(fn{1}) = sensor_data.(fn{1})(order_index, :);
+            sensor_data.(fn{1}) = interpToCartesian(kgrid, cart_pos, sensor_data.(fn{1}));
         end
     end
 else
     sensor_data = double(res{'p'});
-    if ~isempty(order_index)
-        sensor_data = sensor_data(order_index, :);
+    if ~isempty(cart_pos)
+        sensor_data = interpToCartesian(kgrid, cart_pos, sensor_data);
     end
 end
+end
+
+function data = interpToCartesian(kgrid, cart_pos, data)
+    % Interpolate full-grid sensor data to Cartesian positions (matches CartInterp='linear')
+    if kgrid.dim == 1
+        Nt = size(data, 2);
+        interp_data = zeros(numel(cart_pos), Nt);
+        for t = 1:Nt
+            interp_data(:, t) = interp1(kgrid.x_vec, data(:, t), cart_pos(:));
+        end
+        data = interp_data;
+    elseif kgrid.dim == 2
+        [tri, bc] = gridDataFast2D(kgrid.x(:), kgrid.y(:), cart_pos(1,:)', cart_pos(2,:)');
+        Nt = size(data, 2);
+        interp_data = zeros(size(cart_pos, 2), Nt);
+        for t = 1:Nt
+            p_t = data(:, t);
+            interp_data(:, t) = sum(p_t(tri) .* bc, 2);
+        end
+        data = interp_data;
+    elseif kgrid.dim == 3
+        [tri, bc] = gridDataFast3D(kgrid.x(:), kgrid.y(:), kgrid.z(:), cart_pos(1,:)', cart_pos(2,:)', cart_pos(3,:)');
+        Nt = size(data, 2);
+        interp_data = zeros(size(cart_pos, 2), Nt);
+        for t = 1:Nt
+            p_t = data(:, t);
+            interp_data(:, t) = sum(p_t(tri) .* bc, 2);
+        end
+        data = interp_data;
+    end
 end
 
 function tf = isCartesian(kgrid, mask)
