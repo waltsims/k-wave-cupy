@@ -49,7 +49,7 @@ mat = kspaceFirstOrder1D(kgrid, medium, source, sensor, opts{:});
 % =========================================================================
 
 py_result = kspaceFirstOrderPy(kgrid, medium, source, sensor, ...
-    'PMLSize', 0, 'PMLAlpha', 0);
+    'PMLSize', 0, 'PMLAlpha', 0, 'Smooth', false);
 
 % =========================================================================
 % COMPARE

@@ -28,8 +28,9 @@ try
     sensor.mask = ones(kgrid.Nx, 1);
     
     % Run Python
-    py_data = kspaceFirstOrderPy(kgrid, medium, source, sensor);
-    
+    py_data = kspaceFirstOrderPy(kgrid, medium, source, sensor, ...
+        'PMLSize', 0, 'PMLAlpha', 0, 'Smooth', false);
+
     % Run MATLAB
     opts = {'PlotSim', false, 'PMLAlpha', 0, 'PMLSize', 0, ...
             'PMLInside', true, 'DataCast', 'off', 'DisplayMask', 'off', ...
