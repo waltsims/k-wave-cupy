@@ -348,16 +348,17 @@ class Simulation:
         self.rho0_staggered = [self._stagger(self.rho0, axis) for axis in range(self.ndim)]
 
         # Sensor data storage (sized based on record_start_index)
-        self.sensor_data = xp.zeros((self.n_sensor_points, self.num_recorded_time_points), dtype=float)
-        self.sensor_data_u = {}
+        self.sensor_data = {}
+        if 'p' in self.record:
+            self.sensor_data['p'] = xp.zeros((self.n_sensor_points, self.num_recorded_time_points), dtype=float)
         for a in 'xyz'[:self.ndim]:
             for suffix in ('', '_staggered'):
                 v = f'u{a}{suffix}'
                 if v in self.record:
-                    self.sensor_data_u[v] = xp.zeros((self.n_sensor_points, self.num_recorded_time_points), dtype=float)
+                    self.sensor_data[v] = xp.zeros((self.n_sensor_points, self.num_recorded_time_points), dtype=float)
 
         # Spatial shift operators for colocating velocity to pressure grid
-        if any(f'u{a}' in self.record for a in 'xyz'[:self.ndim]):
+        if any(f'u{a}' in self.sensor_data for a in 'xyz'[:self.ndim]):
             self.unstagger_ops = [xp.exp(-1j * self.k_list[ax] * self.spacing[ax] / 2)
                                   for ax in range(self.ndim)]
 
@@ -414,13 +415,14 @@ class Simulation:
         # Record sensor data (only if past record_start_index)
         if self.t >= self.record_start_index:
             file_index = self.t - self.record_start_index
-            self.sensor_data[:, file_index] = self.p[self.mask]
+            if 'p' in self.sensor_data:
+                self.sensor_data['p'][:, file_index] = self.p[self.mask]
             for i, a in enumerate('xyz'[:self.ndim]):
-                if f'u{a}' in self.sensor_data_u:  # colocated
+                if f'u{a}' in self.sensor_data:  # colocated
                     shifted = xp.real(xp.fft.ifftn(self.unstagger_ops[i] * xp.fft.fftn(self.u[i])))
-                    self.sensor_data_u[f'u{a}'][:, file_index] = shifted[self.mask]
-                if f'u{a}_staggered' in self.sensor_data_u:  # raw staggered
-                    self.sensor_data_u[f'u{a}_staggered'][:, file_index] = self.u[i][self.mask]
+                    self.sensor_data[f'u{a}'][:, file_index] = shifted[self.mask]
+                if f'u{a}_staggered' in self.sensor_data:  # raw staggered
+                    self.sensor_data[f'u{a}_staggered'][:, file_index] = self.u[i][self.mask]
         self.t += 1
         return self
 
@@ -430,11 +432,7 @@ class Simulation:
             self.setup()
         while self.t < self.Nt:
             self.step()
-        p_data = _to_cpu(self.sensor_data)
-        results = {"p": p_data, "sensor_data": p_data, "pressure": _to_cpu(self.p)}
-        for v, data in self.sensor_data_u.items():
-            results[v] = _to_cpu(data)
-        return results
+        return {k: _to_cpu(v) for k, v in self.sensor_data.items()}
 
     # Helper methods
     def _diff(self, f, op, apply_kappa=True):

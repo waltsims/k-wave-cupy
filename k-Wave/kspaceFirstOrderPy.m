@@ -114,7 +114,7 @@ if ~isempty(record)
         end
     end
 else
-    sensor_data = double(res{'sensor_data'});
+    sensor_data = double(res{'p'});
 end
 end
 
