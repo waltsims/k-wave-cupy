@@ -553,6 +553,44 @@ def acoustic_intensity(result):
         out[f'I{a}_avg'] = np.mean(p * u_shifted, axis=-1)
     return out
 
+def time_reversal(kgrid, medium, sensor, backend="auto"):
+    """Time reversal reconstruction: wraps Simulation as a propagation operator.
+
+    Enforces Dirichlet BCs at sensor points from flipped boundary data,
+    then returns the reconstructed pressure field.
+    """
+    # Create simulation with no sources — propagation operator only
+    source = SimpleNamespace(p0=0, p_mask=0, p=0, u_mask=0, ux=0, uy=0, uz=0)
+    sim = Simulation(kgrid, medium, source, sensor, backend)
+    sim.setup()
+
+    xp = sim.xp
+    data = xp.array(np.asarray(sensor.time_reversal_boundary_data, dtype=float, order='F'))
+    if data.ndim == 1: data = data.reshape(1, -1)
+    data = xp.flip(data, axis=-1)
+
+    # Injection indices from binary sensor mask
+    mask = np.asarray(sensor.mask, dtype=bool).flatten(order='F')
+    if mask.size == 1: mask = np.full(int(np.prod(sim.grid_shape)), bool(mask[0]), dtype=bool)
+    idx = xp.array(np.where(mask)[0])
+
+    def enforce_bc(t):
+        flat = sim.p.flatten(order='F')
+        flat[idx] = data[:, t]
+        sim.p = flat.reshape(sim.grid_shape, order='F')
+        rho_mod = sim.p / (sim.c0**2 * sim.ndim)
+        for i in range(sim.ndim):
+            flat_r = sim.rho_split[i].flatten(order='F')
+            flat_r[idx] = rho_mod.flatten(order='F')[idx]
+            sim.rho_split[i] = flat_r.reshape(sim.grid_shape, order='F')
+
+    for t in range(sim.Nt - 1):
+        enforce_bc(t)
+        sim.step()
+    enforce_bc(sim.Nt - 1)
+
+    return _to_cpu(sim.p)
+
 # =============================================================================
 # MATLAB Interop
 # =============================================================================
@@ -580,6 +618,11 @@ def create_simulation(kgrid, medium, source, sensor, backend="auto"):
 
 def simulate_from_dicts(kgrid, medium, source, sensor, backend="auto"):
     """MATLAB interop entry point."""
+    s = _to_namespace(sensor)
+    if _attr(s, 'time_reversal_boundary_data', None) is not None:
+        return time_reversal(
+            _to_namespace(kgrid), _to_namespace(_normalize_medium(medium)),
+            s, backend)
     return create_simulation(kgrid, medium, source, sensor, backend).run()
 
 def interop_sanity(arr):

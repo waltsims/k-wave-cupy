@@ -3,9 +3,8 @@ function sensor_data = kspaceFirstOrderPy(kgrid, medium, source, sensor, varargi
 
 % Validate inputs (Python backend requires explicit time array)
 if kgrid.dim > 3, error('kspaceFirstOrderPy:UnsupportedDimension', 'Only 1D, 2D, 3D supported.'); end
-if ~isempty(sensor) && (isfield(sensor, 'time_reversal_boundary_data') || isprop(sensor, 'time_reversal_boundary_data'))
-    error('kspaceFirstOrderPy:UnsupportedFeature', 'Time reversal reconstruction is not supported by the Python backend.');
-end
+% Check for time reversal mode
+is_time_rev = ~isempty(sensor) && (isfield(sensor, 'time_reversal_boundary_data') || isprop(sensor, 'time_reversal_boundary_data'));
 if isempty(kgrid.dt) || (ischar(kgrid.dt) && strcmp(kgrid.dt, 'auto'))
     error('kspaceFirstOrderPy:TimeNotSet', ...
         ['Time array not set. The Python backend requires explicit time array.\n' ...
@@ -105,10 +104,19 @@ if ~isempty(record)
     end
     sensor_args = [sensor_args, {'record', py.tuple(py_record)}];
 end
+if is_time_rev
+    sensor_args = [sensor_args, {'time_reversal_boundary_data', toNumpy(sensor.time_reversal_boundary_data)}];
+end
 d_py = py.dict(pyargs(sensor_args{:}));
 
 % Run simulation and convert result back to MATLAB double
 res = kWavePy.simulate_from_dicts(k_py, m_py, s_py, d_py, pyargs('backend', char(p.Results.Backend)));
+
+% Time reversal returns reconstructed pressure field directly
+if is_time_rev
+    sensor_data = double(res);
+    return;
+end
 
 % Return struct matching MATLAB convention when sensor.record is set
 if ~isempty(record)
