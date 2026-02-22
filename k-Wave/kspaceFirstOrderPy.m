@@ -83,6 +83,14 @@ if kgrid.dim >= 3
 end
 s_py = py.dict(pyargs(source_args{:}));
 
+% Handle empty sensor — run simulation without recording
+if isempty(sensor)
+    d_py = py.dict(pyargs('mask', toNumpy(0)));
+    kWavePy.simulate_from_dicts(k_py, m_py, s_py, d_py, pyargs('backend', char(p.Results.Backend)));
+    sensor_data = [];
+    return;
+end
+
 % Pass sensor mask directly to Python (handles both binary and Cartesian)
 sensor_mask = getField(sensor, {'mask'}, 1);
 
