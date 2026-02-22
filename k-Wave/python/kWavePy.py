@@ -112,17 +112,38 @@ class Simulation:
         return self
 
     def _setup_sensor_mask(self):
+        """Build self._extract(field) → sensor values."""
         xp = self.xp
         mask_raw = _attr(self.sensor, 'mask', None)
+        grid_numel = int(np.prod(self.grid_shape))
+
+        def _is_binary(arr):
+            """numel matches grid → boolean mask (matches MATLAB isCartesian logic)."""
+            return arr.size == 1 or arr.size == grid_numel
+
+        def _is_cartesian(arr):
+            """First dimension matches ndim, remaining are query points."""
+            return arr.ndim == 2 and arr.shape[0] == self.ndim
+
         if mask_raw is None:
-            self.mask = xp.ones(self.grid_shape, dtype=bool)
+            self.n_sensor_points = grid_numel
+            self._extract = lambda f: f.flatten(order="F")
         else:
-            self.mask = xp.array(mask_raw, dtype=bool, copy=True).flatten(order="F")
-            if self.mask.size == 1:
-                self.mask = xp.full(self.grid_shape, bool(self.mask[0]), dtype=bool)
+            mask_arr = np.asarray(mask_raw, dtype=float)
+            if _is_binary(mask_arr):
+                bmask = xp.array(mask_arr, dtype=bool).flatten(order="F")
+                if bmask.size == 1:
+                    bmask = xp.full(grid_numel, bool(bmask[0]), dtype=bool)
+                self.n_sensor_points = int(xp.sum(bmask))
+                idx = xp.where(bmask)[0]
+                self._extract = lambda f, _i=idx: f.flatten(order="F")[_i]
+            elif _is_cartesian(mask_arr):
+                self._setup_cartesian_extract(mask_arr)
             else:
-                self.mask = self.mask.reshape(self.grid_shape, order="F")
-        self.n_sensor_points = int(xp.sum(self.mask))
+                raise ValueError(
+                    f"Sensor mask shape {mask_arr.shape} is neither binary "
+                    f"(numel={grid_numel}) nor Cartesian ({self.ndim}, N_points)"
+                )
 
         # Parse sensor.record
         record = _attr(self.sensor, 'record', ('p',))
@@ -139,6 +160,45 @@ class Simulation:
         record_start_raw = _attr(self.sensor, 'record_start_index', 1)
         self.record_start_index = int(record_start_raw) - 1
         self.num_recorded_time_points = self.Nt - self.record_start_index
+
+    def _setup_cartesian_extract(self, cart_pos):
+        """Build self._extract using Delaunay interpolation (same Qhull backend as MATLAB)."""
+        xp = self.xp
+        cart = cart_pos if cart_pos.ndim == 2 else cart_pos.reshape(self.ndim, -1)
+        self.n_sensor_points = cart.shape[1]
+
+        # Must reconstruct kWaveGrid coordinate vectors (centered at origin)
+        vecs = [(np.arange(N) - N // 2) * d for N, d in zip(self.dims, self.spacing)]
+
+        if self.ndim == 1:
+            # scipy.spatial.Delaunay requires >= 2D points
+            x_vec, cart_x = vecs[0], cart.flatten()
+            self._extract = lambda f, _x=x_vec, _cx=cart_x, _xp=xp: \
+                _xp.asarray(np.interp(_cx, _x, np.asarray(_to_cpu(f).flatten(order="F"))))
+        else:
+            from scipy.spatial import Delaunay
+
+            # indexing='ij' gives ndgrid layout (MATLAB convention, not meshgrid)
+            grids = np.meshgrid(*vecs, indexing='ij')
+            grid_pts = np.column_stack([g.flatten(order='F') for g in grids])
+            tri = Delaunay(grid_pts)
+
+            query_pts = cart.T
+            simplex_idx = tri.find_simplex(query_pts)
+            if np.any(simplex_idx < 0):
+                raise ValueError("Cartesian sensor points must lie within the grid.")
+
+            # Barycentric coords from scipy's pre-computed affine transforms
+            T = tri.transform[simplex_idx, :self.ndim]
+            r = tri.transform[simplex_idx, self.ndim]
+            b = np.einsum('ijk,ik->ij', T, query_pts - r)
+            bc = np.column_stack([b, 1 - b.sum(axis=1)])
+
+            # Precompute so step() only does a gather + weighted sum
+            tri_v = xp.array(tri.simplices[simplex_idx])
+            bc_v = xp.array(bc)
+            self._extract = lambda f, _t=tri_v, _b=bc_v: \
+                (f.flatten(order="F")[_t] * _b).sum(axis=1)
 
     def _setup_pml(self):
         """Build Perfectly Matched Layer absorption operators for each dimension."""
@@ -415,17 +475,17 @@ class Simulation:
                 self.rho_split[i] = self._p0_initial / (self.c0**2 * self.ndim)
                 self.u[i] = (self.dt / (2 * self.rho0_staggered[i])) * self._diff(self.p, self.op_grad_list[i])
 
-        # Record sensor data (only if past record_start_index)
+        # Record sensor data (binary: index extraction, Cartesian: Delaunay interpolation)
         if self.t >= self.record_start_index:
             file_index = self.t - self.record_start_index
             if 'p' in self.sensor_data:
-                self.sensor_data['p'][:, file_index] = self.p[self.mask]
+                self.sensor_data['p'][:, file_index] = self._extract(self.p)
             for i, a in enumerate('xyz'[:self.ndim]):
                 if f'u{a}' in self.sensor_data:  # colocated
                     shifted = xp.real(xp.fft.ifftn(self.unstagger_ops[i] * xp.fft.fftn(self.u[i])))
-                    self.sensor_data[f'u{a}'][:, file_index] = shifted[self.mask]
+                    self.sensor_data[f'u{a}'][:, file_index] = self._extract(shifted)
                 if f'u{a}_staggered' in self.sensor_data:  # raw staggered
-                    self.sensor_data[f'u{a}_staggered'][:, file_index] = self.u[i][self.mask]
+                    self.sensor_data[f'u{a}_staggered'][:, file_index] = self._extract(self.u[i])
         self.t += 1
         return self
 
