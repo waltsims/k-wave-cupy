@@ -3,7 +3,7 @@ function sensor_data = kspaceFirstOrderPy(kgrid, medium, source, sensor, varargi
 
 % Validate inputs (Python backend requires explicit time array)
 if kgrid.dim > 3, error('kspaceFirstOrderPy:UnsupportedDimension', 'Only 1D, 2D, 3D supported.'); end
-if isfield(sensor, 'time_reversal_boundary_data') || isprop(sensor, 'time_reversal_boundary_data')
+if ~isempty(sensor) && (isfield(sensor, 'time_reversal_boundary_data') || isprop(sensor, 'time_reversal_boundary_data'))
     error('kspaceFirstOrderPy:UnsupportedFeature', 'Time reversal reconstruction is not supported by the Python backend.');
 end
 if isempty(kgrid.dt) || (ischar(kgrid.dt) && strcmp(kgrid.dt, 'auto'))

@@ -27,9 +27,7 @@ catch
     return;
 end
 
-% comparison threshold (relaxed for initial 2D implementation)
-% TODO: Investigate and reduce this threshold once 2D parity is better understood
-comparison_thresh = 0.15;  % 15% relative error allowed for now
+comparison_thresh = 1e-10;
 
 % =========================================================================
 % SIMULATION SETUP

@@ -29,8 +29,7 @@ catch
     return;
 end
 
-% comparison threshold (Delaunay interpolation matches to high precision)
-comparison_thresh = 0.15;
+comparison_thresh = 1e-10;
 
 % =========================================================================
 % SIMULATION SETUP
