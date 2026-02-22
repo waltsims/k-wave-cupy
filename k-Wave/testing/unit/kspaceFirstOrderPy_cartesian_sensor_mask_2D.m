@@ -1,11 +1,13 @@
-function test_pass = kspaceFirstOrderPy_binary_sensor_mask_2D(plot_comparisons, plot_simulations)
+function test_pass = kspaceFirstOrderPy_cartesian_sensor_mask_2D(plot_comparisons, plot_simulations)
 % DESCRIPTION:
-%     Test 2D Python backend against MATLAB reference using binary sensor mask.
-%     Uses a simple disc source with homogeneous medium (no absorption).
+%     Test Python backend Cartesian sensor mask against MATLAB reference.
+%     Passes Cartesian coordinates directly to Python (Delaunay interpolation
+%     in Python) and compares against MATLAB kspaceFirstOrder2D with the
+%     same Cartesian sensor mask (Delaunay interpolation in MATLAB).
 %
 % ABOUT:
 %     author      - k-Wave-CuPy Development
-%     date        - 15th February 2026
+%     date        - 22nd February 2026
 
 % check for plot inputs
 if nargin == 0
@@ -33,36 +35,38 @@ comparison_thresh = 1e-10;
 % SIMULATION SETUP
 % =========================================================================
 
-% create small computational grid (fast test)
+% create small computational grid
 Nx = 64;
 Ny = 64;
 dx = 0.1e-3;
 dy = 0.1e-3;
 kgrid = kWaveGrid(Nx, dx, Ny, dy);
 
-% homogeneous medium (no absorption for simplicity)
+% homogeneous medium
 medium.sound_speed = 1500;
 medium.density = 1000;
 
-% create simple disc source
-disc_x_pos = Nx/2;
-disc_y_pos = Ny/2;
-disc_radius = 5;
-source.p0 = 5 * makeDisc(Nx, Ny, disc_x_pos, disc_y_pos, disc_radius);
+% create disc source
+source.p0 = 5 * makeDisc(Nx, Ny, Nx/2, Ny/2, 5);
 
-% binary sensor mask - record all points
-sensor.mask = ones(Nx, Ny);
+% define Cartesian sensor points on a circle (not on grid points)
+sensor_radius = 20 * dx;
+num_sensor_points = 50;
+angles = linspace(0, 2*pi, num_sensor_points + 1);
+angles = angles(1:end-1);
+cart_x = sensor_radius * cos(angles);
+cart_y = sensor_radius * sin(angles);
+sensor.mask = [cart_x; cart_y];
 
-% set time array (limit steps for initial 2D testing)
+% set time array
 kgrid.makeTime(medium.sound_speed);
-% Limit to 50 time steps for faster testing and less error accumulation
 kgrid.setTime(min(50, kgrid.Nt), kgrid.dt);
 
 % =========================================================================
 % RUN MATLAB REFERENCE
 % =========================================================================
 
-disp('Running MATLAB reference...');
+disp('Running MATLAB reference (Cartesian sensor)...');
 sensor_data_matlab = kspaceFirstOrder2D(kgrid, medium, source, sensor, ...
     'PMLInside', false, 'PMLSize', 0, 'PlotSim', plot_simulations, 'Smooth', false, ...
     'DataCast', 'off');
@@ -71,26 +75,27 @@ sensor_data_matlab = kspaceFirstOrder2D(kgrid, medium, source, sensor, ...
 % RUN PYTHON BACKEND
 % =========================================================================
 
-disp('Running Python backend...');
+disp('Running Python backend (Cartesian sensor)...');
 sensor_data_python = kspaceFirstOrderPy(kgrid, medium, source, sensor, 'PMLSize', 0, 'Smooth', false);
 
 % =========================================================================
 % COMPARISON
 % =========================================================================
 
-% compute relative error
-diff = abs(sensor_data_matlab(:) - sensor_data_python(:));
-max_diff = max(diff);
+diff_val = abs(sensor_data_matlab(:) - sensor_data_python(:));
+max_diff = max(diff_val);
 rel_err = max_diff / max(abs(sensor_data_matlab(:)));
 
 fprintf('Max absolute difference: %.2e\n', max_diff);
 fprintf('Max relative error: %.2e\n', rel_err);
+fprintf('Python sensor_data size: %s\n', mat2str(size(sensor_data_python)));
+fprintf('MATLAB sensor_data size: %s\n', mat2str(size(sensor_data_matlab)));
 
 if rel_err > comparison_thresh
     test_pass = false;
     disp('FAILED: Relative error exceeds threshold');
 else
-    disp('PASSED: Python backend matches MATLAB reference');
+    disp('PASSED: Python Cartesian sensor matches MATLAB reference');
 end
 
 % =========================================================================
@@ -101,26 +106,34 @@ if plot_comparisons
     figure;
 
     subplot(2, 2, 1);
-    imagesc(reshape(sensor_data_matlab(:, end), [Nx, Ny]));
-    title('MATLAB Final Pressure');
-    colorbar; axis image;
-
-    subplot(2, 2, 2);
-    imagesc(reshape(sensor_data_python(:, end), [Nx, Ny]));
-    title('Python Final Pressure');
-    colorbar; axis image;
-
-    subplot(2, 2, 3);
-    imagesc(reshape(sensor_data_matlab(:, end) - sensor_data_python(:, end), [Nx, Ny]));
-    title('Difference');
-    colorbar; axis image;
-
-    subplot(2, 2, 4);
-    plot(sensor_data_matlab(Nx*Ny/2 + Nx/2, :), 'b-', 'LineWidth', 1.5);
+    plot(sensor_data_matlab(1, :), 'b-', 'LineWidth', 1.5);
     hold on;
-    plot(sensor_data_python(Nx*Ny/2 + Nx/2, :), 'r--', 'LineWidth', 1.5);
+    plot(sensor_data_python(1, :), 'r--', 'LineWidth', 1.5);
     legend('MATLAB', 'Python');
-    title('Time Series at Center');
+    title('Sensor Point 1 Time Series');
     xlabel('Time Step');
     ylabel('Pressure');
+
+    subplot(2, 2, 2);
+    plot(sensor_data_matlab(25, :), 'b-', 'LineWidth', 1.5);
+    hold on;
+    plot(sensor_data_python(25, :), 'r--', 'LineWidth', 1.5);
+    legend('MATLAB', 'Python');
+    title('Sensor Point 25 Time Series');
+    xlabel('Time Step');
+    ylabel('Pressure');
+
+    subplot(2, 2, 3);
+    imagesc(sensor_data_matlab);
+    title('MATLAB Cartesian Sensor Data');
+    colorbar;
+    xlabel('Time Step');
+    ylabel('Sensor Point');
+
+    subplot(2, 2, 4);
+    imagesc(abs(sensor_data_matlab - sensor_data_python));
+    title('Absolute Difference');
+    colorbar;
+    xlabel('Time Step');
+    ylabel('Sensor Point');
 end

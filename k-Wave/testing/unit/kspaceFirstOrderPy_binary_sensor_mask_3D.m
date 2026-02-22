@@ -27,8 +27,7 @@ catch
     return;
 end
 
-% comparison threshold (relaxed for initial 3D implementation)
-comparison_thresh = 0.15;
+comparison_thresh = 1e-10;
 
 % =========================================================================
 % SIMULATION SETUP

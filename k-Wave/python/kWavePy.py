@@ -112,17 +112,38 @@ class Simulation:
         return self
 
     def _setup_sensor_mask(self):
+        """Build self._extract(field) → sensor values."""
         xp = self.xp
         mask_raw = _attr(self.sensor, 'mask', None)
+        grid_numel = int(np.prod(self.grid_shape))
+
+        def _is_binary(arr):
+            """numel matches grid → boolean mask (matches MATLAB isCartesian logic)."""
+            return arr.size == 1 or arr.size == grid_numel
+
+        def _is_cartesian(arr):
+            """First dimension matches ndim, remaining are query points."""
+            return arr.ndim == 2 and arr.shape[0] == self.ndim
+
         if mask_raw is None:
-            self.mask = xp.ones(self.grid_shape, dtype=bool)
+            self.n_sensor_points = grid_numel
+            self._extract = lambda f: f.flatten(order="F")
         else:
-            self.mask = xp.array(mask_raw, dtype=bool, copy=True).flatten(order="F")
-            if self.mask.size == 1:
-                self.mask = xp.full(self.grid_shape, bool(self.mask[0]), dtype=bool)
+            mask_arr = np.asarray(mask_raw, dtype=float)
+            if _is_binary(mask_arr):
+                bmask = xp.array(mask_arr, dtype=bool).flatten(order="F")
+                if bmask.size == 1:
+                    bmask = xp.full(grid_numel, bool(bmask[0]), dtype=bool)
+                self.n_sensor_points = int(xp.sum(bmask))
+                idx = xp.where(bmask)[0]
+                self._extract = lambda f, _i=idx: f.flatten(order="F")[_i]
+            elif _is_cartesian(mask_arr):
+                self._setup_cartesian_extract(mask_arr)
             else:
-                self.mask = self.mask.reshape(self.grid_shape, order="F")
-        self.n_sensor_points = int(xp.sum(self.mask))
+                raise ValueError(
+                    f"Sensor mask shape {mask_arr.shape} is neither binary "
+                    f"(numel={grid_numel}) nor Cartesian ({self.ndim}, N_points)"
+                )
 
         # Parse sensor.record
         record = _attr(self.sensor, 'record', ('p',))
@@ -139,6 +160,45 @@ class Simulation:
         record_start_raw = _attr(self.sensor, 'record_start_index', 1)
         self.record_start_index = int(record_start_raw) - 1
         self.num_recorded_time_points = self.Nt - self.record_start_index
+
+    def _setup_cartesian_extract(self, cart_pos):
+        """Build self._extract using Delaunay interpolation (same Qhull backend as MATLAB)."""
+        xp = self.xp
+        cart = cart_pos if cart_pos.ndim == 2 else cart_pos.reshape(self.ndim, -1)
+        self.n_sensor_points = cart.shape[1]
+
+        # Must reconstruct kWaveGrid coordinate vectors (centered at origin)
+        vecs = [(np.arange(N) - N // 2) * d for N, d in zip(self.dims, self.spacing)]
+
+        if self.ndim == 1:
+            # scipy.spatial.Delaunay requires >= 2D points
+            x_vec, cart_x = vecs[0], cart.flatten()
+            self._extract = lambda f, _x=x_vec, _cx=cart_x, _xp=xp: \
+                _xp.asarray(np.interp(_cx, _x, np.asarray(_to_cpu(f).flatten(order="F"))))
+        else:
+            from scipy.spatial import Delaunay
+
+            # indexing='ij' gives ndgrid layout (MATLAB convention, not meshgrid)
+            grids = np.meshgrid(*vecs, indexing='ij')
+            grid_pts = np.column_stack([g.flatten(order='F') for g in grids])
+            tri = Delaunay(grid_pts)
+
+            query_pts = cart.T
+            simplex_idx = tri.find_simplex(query_pts)
+            if np.any(simplex_idx < 0):
+                raise ValueError("Cartesian sensor points must lie within the grid.")
+
+            # Barycentric coords from scipy's pre-computed affine transforms
+            T = tri.transform[simplex_idx, :self.ndim]
+            r = tri.transform[simplex_idx, self.ndim]
+            b = np.einsum('ijk,ik->ij', T, query_pts - r)
+            bc = np.column_stack([b, 1 - b.sum(axis=1)])
+
+            # Precompute so step() only does a gather + weighted sum
+            tri_v = xp.array(tri.simplices[simplex_idx])
+            bc_v = xp.array(bc)
+            self._extract = lambda f, _t=tri_v, _b=bc_v: \
+                (f.flatten(order="F")[_t] * _b).sum(axis=1)
 
     def _setup_pml(self):
         """Build Perfectly Matched Layer absorption operators for each dimension."""
@@ -415,17 +475,17 @@ class Simulation:
                 self.rho_split[i] = self._p0_initial / (self.c0**2 * self.ndim)
                 self.u[i] = (self.dt / (2 * self.rho0_staggered[i])) * self._diff(self.p, self.op_grad_list[i])
 
-        # Record sensor data (only if past record_start_index)
+        # Record sensor data (binary: index extraction, Cartesian: Delaunay interpolation)
         if self.t >= self.record_start_index:
             file_index = self.t - self.record_start_index
             if 'p' in self.sensor_data:
-                self.sensor_data['p'][:, file_index] = self.p[self.mask]
+                self.sensor_data['p'][:, file_index] = self._extract(self.p)
             for i, a in enumerate('xyz'[:self.ndim]):
                 if f'u{a}' in self.sensor_data:  # colocated
                     shifted = xp.real(xp.fft.ifftn(self.unstagger_ops[i] * xp.fft.fftn(self.u[i])))
-                    self.sensor_data[f'u{a}'][:, file_index] = shifted[self.mask]
+                    self.sensor_data[f'u{a}'][:, file_index] = self._extract(shifted)
                 if f'u{a}_staggered' in self.sensor_data:  # raw staggered
-                    self.sensor_data[f'u{a}_staggered'][:, file_index] = self.u[i][self.mask]
+                    self.sensor_data[f'u{a}_staggered'][:, file_index] = self._extract(self.u[i])
         self.t += 1
         return self
 
@@ -492,6 +552,134 @@ def acoustic_intensity(result):
         out[f'I{a}'] = p * u_shifted
         out[f'I{a}_avg'] = np.mean(p * u_shifted, axis=-1)
     return out
+
+def angular_spectrum(input_plane, dx, dt, z_pos, c0,
+                     alpha_coeff=0, alpha_power=1.5,
+                     angular_restriction=True, grid_expansion=0, reverse=False):
+    """Project time-domain input plane using the angular spectrum method.
+
+    Args:
+        input_plane: 3D array (Nx, Ny, Nt) of pressure time series [Pa].
+        dx: Spatial step [m].
+        dt: Temporal step [s].
+        z_pos: Scalar or array of z-positions to project to [m].
+        c0: Sound speed [m/s].
+        angular_restriction: Apply angular restriction (default True).
+        grid_expansion: Grid padding for accuracy (default 0).
+        reverse: Project backward if True (default False).
+
+    Returns:
+        (pressure_max, pressure_time): max pressure (Nx,Ny,Nz) and
+        time series (Nx,Ny,Nt,Nz) at each z-position.
+    """
+    input_plane = np.asarray(input_plane, dtype=float)
+    z_pos = np.atleast_1d(np.asarray(z_pos, dtype=float))
+    Nz = len(z_pos)
+
+    if reverse:
+        input_plane = np.flip(input_plane, axis=2)
+
+    # Grid expansion
+    if grid_expansion > 0:
+        input_plane = np.pad(input_plane,
+            [(grid_expansion, grid_expansion), (grid_expansion, grid_expansion), (0, 0)])
+
+    Nx, Ny, Nt = input_plane.shape
+
+    # FFT length: next power of 2 above max spatial dimension, doubled
+    fft_length = 2 ** (int(np.ceil(np.log2(max(Nx, Ny)))) + 1)
+    N = fft_length
+
+    # Wavenumber grid
+    if N % 2 == 0:
+        k_vec = np.arange(-N // 2, N // 2) * 2 * np.pi / (N * dx)
+    else:
+        k_vec = np.arange(-(N - 1) // 2, (N + 1) // 2) * 2 * np.pi / (N * dx)
+    k_vec[N // 2] = 0
+    k_vec = np.fft.ifftshift(k_vec)
+    ky, kx = np.meshgrid(k_vec, k_vec)  # MATLAB meshgrid(k,k) = Python meshgrid with swapped args
+    sqrt_kx2_ky2 = np.sqrt(kx**2 + ky**2)
+
+    # Temporal FFT → single-sided spectrum
+    input_w = np.fft.fft(input_plane, axis=2)
+    num_unique = (Nt + 1) // 2 + (1 if Nt % 2 == 0 else 0)
+    input_w = input_w[:, :, :num_unique]
+    f_vec = np.arange(num_unique) / (dt * Nt)
+
+    # Propagatable frequencies
+    f_max = c0 / (2 * dx)
+    f_prop_mask = f_vec < f_max
+
+    # Absorption
+    absorbing = alpha_coeff > 0
+    if absorbing:
+        alpha_np_coeff = 100 * alpha_coeff * (1e-6 / (2 * np.pi))**alpha_power / (20 * np.log10(np.e))
+
+    # Output arrays
+    pressure_max = np.zeros((Nx, Ny, Nz))
+    pressure_time = np.zeros((Nx, Ny, Nt, Nz))
+
+    for z_idx in range(Nz):
+        z = z_pos[z_idx]
+
+        if z == 0:
+            pressure_max[:, :, z_idx] = np.max(input_plane, axis=2)
+            pressure_time[:, :, :, z_idx] = input_plane
+            continue
+
+        p_step = np.zeros((Nx, Ny, len(f_vec)), dtype=complex)
+
+        for f_idx in np.where(f_prop_mask)[0]:
+            f = f_vec[f_idx]
+            k = 2 * np.pi * f / c0
+
+            # Propagator: kz = sqrt(k^2 - kx^2 - ky^2), complex for evanescent
+            kz = np.sqrt((k**2 - (kx**2 + ky**2)).astype(complex))
+            H = np.conj(np.exp(1j * z * kz))
+
+            # Absorption
+            if absorbing:
+                alpha_Np = alpha_np_coeff * (2 * np.pi * f)**alpha_power
+                if alpha_Np != 0:
+                    H = H * np.exp(-alpha_Np * z * k / kz)
+
+            # Angular restriction
+            if angular_restriction:
+                D = (fft_length - 1) * dx
+                kc = k * np.sqrt(0.5 * D**2 / (0.5 * D**2 + z**2))
+                H[sqrt_kx2_ky2 > kc] = 0
+
+            # Spatial FFT, propagate, IFFT
+            xy_fft = np.fft.fft2(input_w[:, :, f_idx], s=(fft_length, fft_length))
+            projected = np.fft.ifft2(xy_fft * H)[:Nx, :Ny]
+
+            # Retarded time phase shift
+            p_step[:, :, f_idx] = projected * np.exp(1j * 2 * np.pi * f * z / c0)
+
+        # Reconstruct double-sided spectrum
+        if Nt % 2:  # odd
+            p_full = np.concatenate([p_step, np.flip(np.conj(p_step[:, :, 1:]), axis=2)], axis=2)
+        else:  # even
+            p_full = np.concatenate([p_step, np.flip(np.conj(p_step[:, :, 1:-1]), axis=2)], axis=2)
+
+        # IFFT to time domain
+        p_td = np.real(np.fft.ifft(p_full, axis=2))
+
+        pressure_max[:, :, z_idx] = np.max(p_td, axis=2)
+        pressure_time[:, :, :, z_idx] = p_td
+
+    # Trim grid expansion
+    if grid_expansion > 0:
+        s = grid_expansion
+        pressure_max = pressure_max[s:-s, s:-s, :]
+        pressure_time = pressure_time[s:-s, s:-s, :, :]
+
+    # Reverse output order if stepping backwards
+    if reverse:
+        pressure_max = np.flip(pressure_max, axis=2)
+        pressure_time = np.flip(pressure_time, axis=2)
+
+    return pressure_max, pressure_time
 
 # =============================================================================
 # MATLAB Interop
