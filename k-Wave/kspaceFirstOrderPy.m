@@ -3,6 +3,9 @@ function sensor_data = kspaceFirstOrderPy(kgrid, medium, source, sensor, varargi
 
 % Validate inputs (Python backend requires explicit time array)
 if kgrid.dim > 3, error('kspaceFirstOrderPy:UnsupportedDimension', 'Only 1D, 2D, 3D supported.'); end
+if isfield(sensor, 'time_reversal_boundary_data') || isprop(sensor, 'time_reversal_boundary_data')
+    error('kspaceFirstOrderPy:UnsupportedFeature', 'Time reversal reconstruction is not supported by the Python backend.');
+end
 if isempty(kgrid.dt) || (ischar(kgrid.dt) && strcmp(kgrid.dt, 'auto'))
     error('kspaceFirstOrderPy:TimeNotSet', ...
         ['Time array not set. The Python backend requires explicit time array.\n' ...
@@ -80,7 +83,14 @@ if kgrid.dim >= 3
 end
 s_py = py.dict(pyargs(source_args{:}));
 
-sensor_args = {'mask', toNumpy(getField(sensor, {'mask'}, 1)), ...
+% Convert Cartesian sensor mask to binary if needed
+sensor_mask = getField(sensor, {'mask'}, 1);
+order_index = [];
+if isCartesian(kgrid, sensor_mask)
+    [sensor_mask, order_index] = cart2grid(kgrid, sensor_mask);
+end
+
+sensor_args = {'mask', toNumpy(sensor_mask), ...
     'record_start_index', int64(getField(sensor, {'record_start_index'}, 1))};
 record = getField(sensor, {'record'}, {});
 if ~isempty(record)
@@ -122,9 +132,27 @@ if ~isempty(record)
             sensor_data.(record{i}) = double(res{record{i}});
         end
     end
+    % Reorder Cartesian sensor data from grid order to original point order
+    if ~isempty(order_index)
+        for fn = fieldnames(sensor_data)'
+            sensor_data.(fn{1}) = sensor_data.(fn{1})(order_index, :);
+        end
+    end
 else
     sensor_data = double(res{'p'});
+    if ~isempty(order_index)
+        sensor_data = sensor_data(order_index, :);
+    end
 end
+end
+
+function tf = isCartesian(kgrid, mask)
+    % True if mask contains Cartesian coordinates rather than binary grid values
+    if isscalar(mask), tf = false; return; end
+    grid_numel = kgrid.Nx;
+    if kgrid.dim >= 2, grid_numel = grid_numel * kgrid.Ny; end
+    if kgrid.dim >= 3, grid_numel = grid_numel * kgrid.Nz; end
+    tf = numel(mask) ~= grid_numel;
 end
 
 function value = getFieldValue(s, names, default)

@@ -61,6 +61,7 @@ class Simulation:
     def setup(self):
         """Initialize operators and fields. Call before step()/run()."""
         xp = self.xp
+        print(f"Running on {'CuPy (GPU)' if xp is not np else 'NumPy (CPU)'} backend")
 
         # Parse grid dimensions
         self.dims, self.spacing = [], []
@@ -461,7 +462,8 @@ class Simulation:
         xp = self.xp
         k_mag_sq = sum(xp.fft.fftshift(k)**2 for k in self.k_list)
         k_mag = xp.sqrt(k_mag_sq)
-        return xp.fft.ifftshift(xp.where(k_mag == 0, 0, k_mag**power))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return xp.fft.ifftshift(xp.where(k_mag == 0, 0, k_mag**power))
 
 # =============================================================================
 # Post-Processing
