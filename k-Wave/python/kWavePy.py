@@ -553,6 +553,134 @@ def acoustic_intensity(result):
         out[f'I{a}_avg'] = np.mean(p * u_shifted, axis=-1)
     return out
 
+def angular_spectrum(input_plane, dx, dt, z_pos, c0,
+                     alpha_coeff=0, alpha_power=1.5,
+                     angular_restriction=True, grid_expansion=0, reverse=False):
+    """Project time-domain input plane using the angular spectrum method.
+
+    Args:
+        input_plane: 3D array (Nx, Ny, Nt) of pressure time series [Pa].
+        dx: Spatial step [m].
+        dt: Temporal step [s].
+        z_pos: Scalar or array of z-positions to project to [m].
+        c0: Sound speed [m/s].
+        angular_restriction: Apply angular restriction (default True).
+        grid_expansion: Grid padding for accuracy (default 0).
+        reverse: Project backward if True (default False).
+
+    Returns:
+        (pressure_max, pressure_time): max pressure (Nx,Ny,Nz) and
+        time series (Nx,Ny,Nt,Nz) at each z-position.
+    """
+    input_plane = np.asarray(input_plane, dtype=float)
+    z_pos = np.atleast_1d(np.asarray(z_pos, dtype=float))
+    Nz = len(z_pos)
+
+    if reverse:
+        input_plane = np.flip(input_plane, axis=2)
+
+    # Grid expansion
+    if grid_expansion > 0:
+        input_plane = np.pad(input_plane,
+            [(grid_expansion, grid_expansion), (grid_expansion, grid_expansion), (0, 0)])
+
+    Nx, Ny, Nt = input_plane.shape
+
+    # FFT length: next power of 2 above max spatial dimension, doubled
+    fft_length = 2 ** (int(np.ceil(np.log2(max(Nx, Ny)))) + 1)
+    N = fft_length
+
+    # Wavenumber grid
+    if N % 2 == 0:
+        k_vec = np.arange(-N // 2, N // 2) * 2 * np.pi / (N * dx)
+    else:
+        k_vec = np.arange(-(N - 1) // 2, (N + 1) // 2) * 2 * np.pi / (N * dx)
+    k_vec[N // 2] = 0
+    k_vec = np.fft.ifftshift(k_vec)
+    ky, kx = np.meshgrid(k_vec, k_vec)  # MATLAB meshgrid(k,k) = Python meshgrid with swapped args
+    sqrt_kx2_ky2 = np.sqrt(kx**2 + ky**2)
+
+    # Temporal FFT → single-sided spectrum
+    input_w = np.fft.fft(input_plane, axis=2)
+    num_unique = (Nt + 1) // 2 + (1 if Nt % 2 == 0 else 0)
+    input_w = input_w[:, :, :num_unique]
+    f_vec = np.arange(num_unique) / (dt * Nt)
+
+    # Propagatable frequencies
+    f_max = c0 / (2 * dx)
+    f_prop_mask = f_vec < f_max
+
+    # Absorption
+    absorbing = alpha_coeff > 0
+    if absorbing:
+        alpha_np_coeff = 100 * alpha_coeff * (1e-6 / (2 * np.pi))**alpha_power / (20 * np.log10(np.e))
+
+    # Output arrays
+    pressure_max = np.zeros((Nx, Ny, Nz))
+    pressure_time = np.zeros((Nx, Ny, Nt, Nz))
+
+    for z_idx in range(Nz):
+        z = z_pos[z_idx]
+
+        if z == 0:
+            pressure_max[:, :, z_idx] = np.max(input_plane, axis=2)
+            pressure_time[:, :, :, z_idx] = input_plane
+            continue
+
+        p_step = np.zeros((Nx, Ny, len(f_vec)), dtype=complex)
+
+        for f_idx in np.where(f_prop_mask)[0]:
+            f = f_vec[f_idx]
+            k = 2 * np.pi * f / c0
+
+            # Propagator: kz = sqrt(k^2 - kx^2 - ky^2), complex for evanescent
+            kz = np.sqrt((k**2 - (kx**2 + ky**2)).astype(complex))
+            H = np.conj(np.exp(1j * z * kz))
+
+            # Absorption
+            if absorbing:
+                alpha_Np = alpha_np_coeff * (2 * np.pi * f)**alpha_power
+                if alpha_Np != 0:
+                    H = H * np.exp(-alpha_Np * z * k / kz)
+
+            # Angular restriction
+            if angular_restriction:
+                D = (fft_length - 1) * dx
+                kc = k * np.sqrt(0.5 * D**2 / (0.5 * D**2 + z**2))
+                H[sqrt_kx2_ky2 > kc] = 0
+
+            # Spatial FFT, propagate, IFFT
+            xy_fft = np.fft.fft2(input_w[:, :, f_idx], s=(fft_length, fft_length))
+            projected = np.fft.ifft2(xy_fft * H)[:Nx, :Ny]
+
+            # Retarded time phase shift
+            p_step[:, :, f_idx] = projected * np.exp(1j * 2 * np.pi * f * z / c0)
+
+        # Reconstruct double-sided spectrum
+        if Nt % 2:  # odd
+            p_full = np.concatenate([p_step, np.flip(np.conj(p_step[:, :, 1:]), axis=2)], axis=2)
+        else:  # even
+            p_full = np.concatenate([p_step, np.flip(np.conj(p_step[:, :, 1:-1]), axis=2)], axis=2)
+
+        # IFFT to time domain
+        p_td = np.real(np.fft.ifft(p_full, axis=2))
+
+        pressure_max[:, :, z_idx] = np.max(p_td, axis=2)
+        pressure_time[:, :, :, z_idx] = p_td
+
+    # Trim grid expansion
+    if grid_expansion > 0:
+        s = grid_expansion
+        pressure_max = pressure_max[s:-s, s:-s, :]
+        pressure_time = pressure_time[s:-s, s:-s, :, :]
+
+    # Reverse output order if stepping backwards
+    if reverse:
+        pressure_max = np.flip(pressure_max, axis=2)
+        pressure_time = np.flip(pressure_time, axis=2)
+
+    return pressure_max, pressure_time
+
 # =============================================================================
 # MATLAB Interop
 # =============================================================================
