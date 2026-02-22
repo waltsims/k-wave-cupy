@@ -84,7 +84,7 @@ class Simulation:
         self.c_ref = float(xp.max(self.c0))
 
         # CFL stability limit for pseudospectral methods on staggered grids:
-        # c * dt / dx <= 2/pi / sqrt(ndim)  (Treeby & Cox, JASA 2010, Eq. 14)
+        # c * dt / dx <= 2/pi / sqrt(ndim)  (Tabei, Mast & Waag, JASA 2002, Eq. 11)
         cfl = self.c_ref * self.dt / min(self.spacing)
         cfl_max = 2 / (np.pi * np.sqrt(self.ndim))
         if cfl > cfl_max: print(f"Warning: Unstable CFL={cfl:.2f} (limit {cfl_max:.3f} for {self.ndim}D)")
