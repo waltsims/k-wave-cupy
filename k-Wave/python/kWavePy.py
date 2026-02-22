@@ -437,10 +437,9 @@ class Simulation:
     # Helper methods
     def _diff(self, f, op, apply_kappa=True):
         """Spectral differentiation: F^-1[op * kappa * F[f]]."""
+        # TODO: use rfftn/irfftn for ~2x speedup (requires rebuilding all k-space operators on half-grid)
         xp = self.xp
         kappa = self.kappa if apply_kappa else 1
-        if self.ndim == 1: return xp.real(xp.fft.ifft(op * kappa * xp.fft.fft(f)))
-        if self.ndim == 2: return xp.real(xp.fft.ifft2(op * kappa * xp.fft.fft2(f)))
         return xp.real(xp.fft.ifftn(op * kappa * xp.fft.fftn(f)))
 
     def _stagger(self, arr, axis):
