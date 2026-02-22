@@ -61,6 +61,7 @@ class Simulation:
     def setup(self):
         """Initialize operators and fields. Call before step()/run()."""
         xp = self.xp
+        print(f"Running on {'CuPy (GPU)' if xp is not np else 'NumPy (CPU)'} backend")
 
         # Parse grid dimensions
         self.dims, self.spacing = [], []
