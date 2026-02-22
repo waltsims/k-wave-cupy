@@ -73,9 +73,9 @@ s_py = py.dict(pyargs(source_args{:}));
 
 % Convert Cartesian sensor mask to binary if needed
 sensor_mask = getField(sensor, {'mask'}, 1);
-reorder_index = [];
+order_index = [];
 if isCartesian(kgrid, sensor_mask)
-    [sensor_mask, reorder_index] = cart2grid(kgrid, sensor_mask);
+    [sensor_mask, order_index] = cart2grid(kgrid, sensor_mask);
 end
 
 sensor_args = {'mask', toNumpy(sensor_mask), ...
@@ -121,15 +121,15 @@ if ~isempty(record)
         end
     end
     % Reorder Cartesian sensor data from grid order to original point order
-    if ~isempty(reorder_index)
+    if ~isempty(order_index)
         for fn = fieldnames(sensor_data)'
-            sensor_data.(fn{1}) = sensor_data.(fn{1})(reorder_index, :);
+            sensor_data.(fn{1}) = sensor_data.(fn{1})(order_index, :);
         end
     end
 else
     sensor_data = double(res{'p'});
-    if ~isempty(reorder_index)
-        sensor_data = sensor_data(reorder_index, :);
+    if ~isempty(order_index)
+        sensor_data = sensor_data(order_index, :);
     end
 end
 end
