@@ -135,6 +135,7 @@ end
 
 function value = getFieldValue(s, names, default)
     % Supports field aliasing (e.g., 'sound_speed'/'c0') for legacy code compatibility
+    if isempty(s), value = default; return; end
     if ischar(names), names = {names}; end
     for i = 1:numel(names)
         if isprop(s, names{i}) || (isstruct(s) && isfield(s, names{i}))

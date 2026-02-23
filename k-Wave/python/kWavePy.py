@@ -114,6 +114,7 @@ class Simulation:
     def _setup_sensor_mask(self):
         """Build self._extract(field) → sensor values."""
         xp = self.xp
+
         mask_raw = _attr(self.sensor, 'mask', None)
         grid_numel = int(np.prod(self.grid_shape))
 
