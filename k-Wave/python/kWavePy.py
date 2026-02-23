@@ -190,19 +190,21 @@ class Simulation:
         cart = cart_pos if cart_pos.ndim == 2 else cart_pos.reshape(self.ndim, -1)
         self.n_sensor_points = cart.shape[1]
 
-        # Must reconstruct kWaveGrid coordinate vectors (centered at origin)
-        vecs = [(np.arange(N) - N // 2) * d for N, d in zip(self.dims, self.spacing)]
+        # Reconstruct kWaveGrid coordinate axes (centered at origin)
+        axis_coords = [(np.arange(N) - N // 2) * d for N, d in zip(self.dims, self.spacing)]
 
         if self.ndim == 1:
-            # scipy.spatial.Delaunay requires >= 2D points
-            x_vec, cart_x = vecs[0], cart.flatten()
-            self._extract = lambda f, _x=x_vec, _cx=cart_x, _xp=xp: \
-                _xp.asarray(np.interp(_cx, _x, np.asarray(_to_cpu(f).flatten(order="F"))))
+            # scipy.spatial.Delaunay requires >= 2D points; use numpy interp for 1D
+            x_vec, cart_x = axis_coords[0], cart.flatten()
+            def _extract_1d_interp(f):
+                return xp.asarray(np.interp(cart_x, x_vec, _to_cpu(f).flatten(order="F")))
+            self._extract = _extract_1d_interp
         else:
             from scipy.spatial import Delaunay
 
             # indexing='ij' gives ndgrid layout (MATLAB convention, not meshgrid)
-            grids = np.meshgrid(*vecs, indexing='ij')
+            grids = np.meshgrid(*axis_coords, indexing='ij')
+            # Flatten in Fortran order to match MATLAB's column-major layout
             grid_pts = np.column_stack([g.flatten(order='F') for g in grids])
             tri = Delaunay(grid_pts)
 
@@ -212,16 +214,18 @@ class Simulation:
                 raise ValueError("Cartesian sensor points must lie within the grid.")
 
             # Barycentric coords from scipy's pre-computed affine transforms
-            T = tri.transform[simplex_idx, :self.ndim]
-            r = tri.transform[simplex_idx, self.ndim]
-            b = np.einsum('ijk,ik->ij', T, query_pts - r)
-            bc = np.column_stack([b, 1 - b.sum(axis=1)])
+            # T @ (x - r) gives barycentric coords for first ndim vertices
+            affine_mat = tri.transform[simplex_idx, :self.ndim]
+            affine_offset = tri.transform[simplex_idx, self.ndim]
+            bary_first = np.einsum('ijk,ik->ij', affine_mat, query_pts - affine_offset)
+            bary_coords = np.column_stack([bary_first, 1 - bary_first.sum(axis=1)])
 
-            # Precompute so step() only does a gather + weighted sum
-            tri_v = xp.array(tri.simplices[simplex_idx])
-            bc_v = xp.array(bc)
-            self._extract = lambda f, _t=tri_v, _b=bc_v: \
-                (f.flatten(order="F")[_t] * _b).sum(axis=1)
+            # Precompute vertex indices and weights so step() only does gather + weighted sum
+            simplex_vertices = xp.array(tri.simplices[simplex_idx])
+            bary_weights = xp.array(bary_coords)
+            def _extract_barycentric(f):
+                return (f.flatten(order="F")[simplex_vertices] * bary_weights).sum(axis=1)
+            self._extract = _extract_barycentric
 
     def _setup_pml(self):
         """Build Perfectly Matched Layer absorption operators for each dimension."""
@@ -230,6 +234,7 @@ class Simulation:
 
         self.pml_list = []      # For pressure/density
         self.pml_sg_list = []   # For velocity (staggered grid)
+        self.pml_sizes = []     # PML thickness per axis (for interior slicing)
 
         for axis in range(self.ndim):
             N = self.dims[axis]
@@ -238,6 +243,7 @@ class Simulation:
 
             pml_size = int(_attr(self.kgrid, f'pml_size_{name}', 0))
             pml_alpha = float(_attr(self.kgrid, f'pml_alpha_{name}', 0))
+            self.pml_sizes.append(pml_size if pml_alpha != 0 else 0)
 
             if pml_size == 0 or pml_alpha == 0:
                 # No PML for this dimension - use identity (multiply by 1)
@@ -290,7 +296,7 @@ class Simulation:
             shape[axis] = N
             self.k_list.append(k.reshape(shape))
 
-        # K-magnitude must be computed from all dimensions to preserve isotropy in k-space
+        # |k| = sqrt(kx^2 + ky^2 + ...) — must use full N-D magnitude for isotropic dispersion
         k_mag_sq = self.k_list[0]**2
         for k in self.k_list[1:]:
             k_mag_sq = k_mag_sq + k**2
@@ -443,7 +449,7 @@ class Simulation:
                 if v in self.record:
                     self.sensor_data[v] = xp.zeros((self.n_sensor_points, self.num_recorded_time_points), dtype=float)
 
-        # Spatial shift operators for colocating velocity to pressure grid
+        # Spectral shift: move velocity from staggered (mid-cell) to collocated (pressure) grid
         if any(f'u{a}' in self.sensor_data for a in 'xyz'[:self.ndim]):
             self.unstagger_ops = [xp.exp(-1j * self.k_list[ax] * self.spacing[ax] / 2)
                                   for ax in range(self.ndim)]
@@ -491,7 +497,7 @@ class Simulation:
         self.p = self.c0**2 * (rho_total + self._absorption(div_u_total)
                                - self._dispersion(rho_total) + self._nonlinearity(rho_total))
 
-        # Initial pressure must override equation of state to inject p0 at t=0
+        # At t=0, override equation of state with p0; reset split densities and u(-dt/2) for leapfrog
         if self.t == 0 and self._p0_initial is not None:
             self.p = self._p0_initial.copy()
             for i in range(self.ndim):
@@ -522,19 +528,20 @@ class Simulation:
         result.update(_compute_aggregates(result, self.ndim))
         if 'p' in result and any(f'u{a}' in result for a in 'xyz'):
             result.update(acoustic_intensity(result))
-        # Final-state snapshots: full grid fields at last timestep
+        # Final-state snapshots: interior grid (excluding PML) at last timestep
+        interior = tuple(slice(s, N - s if s else None) for s, N in zip(self.pml_sizes, self.grid_shape))
         if 'p_final' in self.record:
-            result['p_final'] = _to_cpu(self.p)
+            result['p_final'] = _to_cpu(self.p[interior].copy())
         if any(f'u{a}_final' in self.record for a in 'xyz'):
             for i, a in enumerate('xyz'[:self.ndim]):
                 if f'u{a}_final' in self.record:
-                    result[f'u{a}_final'] = _to_cpu(self.u[i])
+                    result[f'u{a}_final'] = _to_cpu(self.u[i][interior].copy())
         return {k: v for k, v in result.items() if k in self.record}
 
     # Helper methods
     def _diff(self, f, op, apply_kappa=True):
         """Spectral differentiation: F^-1[op * kappa * F[f]]."""
-        # TODO: use rfftn/irfftn for ~2x speedup (requires rebuilding all k-space operators on half-grid)
+        # TODO: rfftn/irfftn for ~2x speedup on real fields (requires half-grid k-space operators)
         xp = self.xp
         kappa = self.kappa if apply_kappa else 1
         return xp.real(xp.fft.ifftn(op * kappa * xp.fft.fftn(f)))
@@ -556,6 +563,7 @@ class Simulation:
         xp = self.xp
         k_mag_sq = sum(xp.fft.fftshift(k)**2 for k in self.k_list)
         k_mag = xp.sqrt(k_mag_sq)
+        # Suppress NumPy warnings at k=0 singularity (CuPy doesn't raise these)
         with np.errstate(divide='ignore', invalid='ignore'):
             return xp.fft.ifftshift(xp.where(k_mag == 0, 0, k_mag**power))
 
