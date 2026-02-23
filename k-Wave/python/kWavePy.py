@@ -230,6 +230,7 @@ class Simulation:
 
         self.pml_list = []      # For pressure/density
         self.pml_sg_list = []   # For velocity (staggered grid)
+        self.pml_sizes = []     # PML thickness per axis (for interior slicing)
 
         for axis in range(self.ndim):
             N = self.dims[axis]
@@ -238,6 +239,7 @@ class Simulation:
 
             pml_size = int(_attr(self.kgrid, f'pml_size_{name}', 0))
             pml_alpha = float(_attr(self.kgrid, f'pml_alpha_{name}', 0))
+            self.pml_sizes.append(pml_size if pml_alpha != 0 else 0)
 
             if pml_size == 0 or pml_alpha == 0:
                 # No PML for this dimension - use identity (multiply by 1)
@@ -522,13 +524,14 @@ class Simulation:
         result.update(_compute_aggregates(result, self.ndim))
         if 'p' in result and any(f'u{a}' in result for a in 'xyz'):
             result.update(acoustic_intensity(result))
-        # Final-state snapshots: full grid fields at last timestep
+        # Final-state snapshots: interior grid (excluding PML) at last timestep
+        interior = tuple(slice(s, N - s if s else None) for s, N in zip(self.pml_sizes, self.grid_shape))
         if 'p_final' in self.record:
-            result['p_final'] = _to_cpu(self.p)
+            result['p_final'] = _to_cpu(self.p[interior].copy())
         if any(f'u{a}_final' in self.record for a in 'xyz'):
             for i, a in enumerate('xyz'[:self.ndim]):
                 if f'u{a}_final' in self.record:
-                    result[f'u{a}_final'] = _to_cpu(self.u[i])
+                    result[f'u{a}_final'] = _to_cpu(self.u[i][interior].copy())
         return {k: v for k, v in result.items() if k in self.record}
 
     # Helper methods
