@@ -234,7 +234,6 @@ class Simulation:
 
         self.pml_list = []      # For pressure/density
         self.pml_sg_list = []   # For velocity (staggered grid)
-        self.pml_sizes = []     # PML thickness per axis (for interior slicing)
 
         for axis in range(self.ndim):
             N = self.dims[axis]
@@ -243,8 +242,6 @@ class Simulation:
 
             pml_size = int(_attr(self.kgrid, f'pml_size_{name}', 0))
             pml_alpha = float(_attr(self.kgrid, f'pml_alpha_{name}', 0))
-            self.pml_sizes.append(pml_size if pml_alpha != 0 else 0)
-
             if pml_size == 0 or pml_alpha == 0:
                 # No PML for this dimension - use identity (multiply by 1)
                 shape = [1] * self.ndim
