@@ -14,6 +14,7 @@ jobs:
     name: Generate ${{ matrix.dim }}D reference data
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         dim: [1, 2, 3]
     steps:
