@@ -188,7 +188,6 @@ The Python/CuPy backend (`kspaceFirstOrderPy`) is under active development and h
 
 **Other Limitations:**
 - Absorption/attenuation not yet implemented (set `medium.alpha_coeff = 0`)
-- Time-varying sources not supported
 - Advanced sensor types (directional, frequency response) not implemented
 
 When creating examples or tests for the Python backend, ensure they only use supported features.
