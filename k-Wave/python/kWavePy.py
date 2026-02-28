@@ -409,19 +409,23 @@ class Simulation:
                 return flat.reshape(self.grid_shape, order="F")
 
             base = {"dirichlet": dirichlet, "additive": additive}.get(mode, additive_raw)
-            return (lambda t, field, dim: base(t, field) if dim == 0 else field) if is_pressure else base
+            return (lambda t, field, dim: base(t, field)) if is_pressure else base
 
+        # Pressure source: scale includes 1/ndim to split across density components
+        N = self.ndim
         self._source_p_op = build_op(
             _attr(self.source, 'p_mask', 0), _attr(self.source, 'p', 0),
             _attr(self.source, 'p_mode', 'additive'),
-            lambda c: c**2, lambda c: 2*self.dt/(c*dx), is_pressure=True)
+            lambda c: c**2 * N, lambda c: 2*self.dt/(c*dx*N), is_pressure=True)
 
+        # Velocity sources: per-axis spacing (dx for ux, dy for uy, dz for uz)
         self._source_u_ops = []
         for i, vel in enumerate(['ux', 'uy', 'uz'][:self.ndim]):
+            di = self.spacing[i]
             self._source_u_ops.append(build_op(
                 _attr(self.source, 'u_mask', 0), _attr(self.source, vel, 0),
                 _attr(self.source, 'u_mode', 'additive'),
-                lambda c: 1, lambda c: 2*c*self.dt/dx))
+                lambda c: 1, lambda c, d=di: 2*c*self.dt/d))
 
     def _setup_fields(self):
         """Initialize pressure, velocity, and density fields."""

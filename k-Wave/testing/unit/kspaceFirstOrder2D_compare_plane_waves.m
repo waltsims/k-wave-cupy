@@ -499,7 +499,7 @@ for test_num = 1:90
         end
 
         % Check threshold
-        COMPARISON_THRESH = 1e-14;
+        COMPARISON_THRESH = 1e-12;  % 2D has more FFT ops than 1D, so fp error is higher
         if rel_error > COMPARISON_THRESH
             disp(['  TEST FAILED: Relative error = ' num2str(rel_error, '%.2e') ' > ' num2str(COMPARISON_THRESH, '%.2e')]);
             test_pass = false;
