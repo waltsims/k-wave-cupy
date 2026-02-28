@@ -47,7 +47,8 @@ fprintf('\n=== Running %s Tests (Python Backend) ===\n\n', dim_name);
 n_tests = numel(tests);
 results = struct('name', {}, 'passed', {}, 'error', {});
 
-cd(test_dir);
+original_dir = cd(test_dir);
+cleanup = onCleanup(@() cd(original_dir));
 for i = 1:n_tests
     test_name = tests{i};
     results(i).name = test_name;
