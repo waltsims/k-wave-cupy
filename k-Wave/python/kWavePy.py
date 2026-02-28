@@ -393,6 +393,7 @@ class Simulation:
                 signal = signal_arr.reshape(-1, signal_arr.shape[-1], order="F") if signal_arr.ndim > 2 else signal_arr
 
             scaled = signal * xp.atleast_1d(xp.asarray(scale))[:, None]
+            signal_len = scaled.shape[1]
 
             def get_val(t):
                 if scaled.shape[0] == 1:
@@ -400,17 +401,20 @@ class Simulation:
                 return scaled[:, t]
 
             def dirichlet(t, field):
+                if t >= signal_len: return field
                 flat = field.flatten(order="F")
                 flat[mask] = get_val(t)
                 return flat.reshape(self.grid_shape, order="F")
 
             def additive_kspace(t, field):
+                if t >= signal_len: return field
                 src = xp.zeros(grid_size, dtype=field.dtype)
                 src[mask] = get_val(t)
                 src = src.reshape(self.grid_shape, order="F")
                 return field + self._diff(src, self.source_kappa, apply_kappa=False)
 
             def additive_no_correction(t, field):
+                if t >= signal_len: return field
                 flat = field.flatten(order="F")
                 flat[mask] += get_val(t)
                 return flat.reshape(self.grid_shape, order="F")
@@ -542,7 +546,7 @@ class Simulation:
                 self.rho_split[i] = self._p0_initial / (self.c0**2 * self.ndim)
                 self.u[i] = (self.dt / (2 * self.rho0_staggered[i])) * self._diff(self.p, self.op_grad_list[i])
 
-        # Record sensor data (binary: index extraction, Cartesian: Delaunay interpolation)
+        # Record sensor data (binary: index extraction, Cartesian: bilinear/trilinear interpolation)
         if self.t >= self.record_start_index:
             file_index = self.t - self.record_start_index
             if 'p' in self.sensor_data:
