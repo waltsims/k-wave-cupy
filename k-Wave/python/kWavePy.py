@@ -570,14 +570,14 @@ class Simulation:
         result.update(_compute_aggregates(result, self.ndim))
         if 'p' in result and any(f'u{a}' in result for a in 'xyz'):
             result.update(acoustic_intensity(result))
-        # Final-state snapshots: interior grid (excluding PML) at last timestep
-        interior = tuple(slice(s, N - s if s else None) for s, N in zip(self.pml_sizes, self.grid_shape))
+        # Final-state snapshots: full grid at last timestep
+        # (PMLInside handling is done by the MATLAB wrapper, so Python always sees the full grid)
         if 'p_final' in self.record:
-            result['p_final'] = _to_cpu(self.p[interior].copy())
+            result['p_final'] = _to_cpu(self.p.copy())
         if any(f'u{a}_final' in self.record for a in 'xyz'):
             for i, a in enumerate('xyz'[:self.ndim]):
                 if f'u{a}_final' in self.record:
-                    result[f'u{a}_final'] = _to_cpu(self.u[i][interior].copy())
+                    result[f'u{a}_final'] = _to_cpu(self.u[i].copy())
         return {k: v for k, v in result.items() if k in self.record}
 
     # Helper methods
