@@ -185,7 +185,7 @@ class Simulation:
         self.num_recorded_time_points = self.Nt - self.record_start_index
 
     def _setup_cartesian_extract(self, cart_pos):
-        """Build self._extract using Delaunay interpolation (same Qhull backend as MATLAB)."""
+        """Build self._extract using bilinear/trilinear interpolation on the regular grid."""
         xp = self.xp
         cart = cart_pos if cart_pos.ndim == 2 else cart_pos.reshape(self.ndim, -1)
         self.n_sensor_points = cart.shape[1]
@@ -194,38 +194,34 @@ class Simulation:
         axis_coords = [(np.arange(N) - N // 2) * d for N, d in zip(self.dims, self.spacing)]
 
         if self.ndim == 1:
-            # scipy.spatial.Delaunay requires >= 2D points; use numpy interp for 1D
             x_vec, cart_x = axis_coords[0], cart.flatten()
             def _extract_1d_interp(f):
                 return xp.asarray(np.interp(cart_x, x_vec, _to_cpu(f).flatten(order="F")))
             self._extract = _extract_1d_interp
         else:
-            from scipy.spatial import Delaunay
+            # Convert Cartesian positions to continuous grid indices
+            frac_idx = np.array([(cart[d] - axis_coords[d][0]) / self.spacing[d]
+                                 for d in range(self.ndim)])  # (ndim, n_pts)
+            int_idx = np.clip(np.floor(frac_idx).astype(int), 0,
+                              np.array(self.dims)[:, None] - 2)
+            local = frac_idx - int_idx
 
-            # indexing='ij' gives ndgrid layout (MATLAB convention, not meshgrid)
-            grids = np.meshgrid(*axis_coords, indexing='ij')
-            # Flatten in Fortran order to match MATLAB's column-major layout
-            grid_pts = np.column_stack([g.flatten(order='F') for g in grids])
-            tri = Delaunay(grid_pts)
+            # F-order strides and 2^ndim corner enumeration
+            strides = np.cumprod([1] + list(self.dims[:-1]))
+            n_corners = 2 ** self.ndim
+            corner_indices = np.zeros((self.n_sensor_points, n_corners), dtype=int)
+            corner_weights = np.ones((self.n_sensor_points, n_corners))
+            for c in range(n_corners):
+                for d in range(self.ndim):
+                    bit = (c >> d) & 1
+                    corner_indices[:, c] += (int_idx[d] + bit) * strides[d]
+                    corner_weights[:, c] *= local[d] if bit else (1 - local[d])
 
-            query_pts = cart.T
-            simplex_idx = tri.find_simplex(query_pts)
-            if np.any(simplex_idx < 0):
-                raise ValueError("Cartesian sensor points must lie within the grid.")
-
-            # Barycentric coords from scipy's pre-computed affine transforms
-            # T @ (x - r) gives barycentric coords for first ndim vertices
-            affine_mat = tri.transform[simplex_idx, :self.ndim]
-            affine_offset = tri.transform[simplex_idx, self.ndim]
-            bary_first = np.einsum('ijk,ik->ij', affine_mat, query_pts - affine_offset)
-            bary_coords = np.column_stack([bary_first, 1 - bary_first.sum(axis=1)])
-
-            # Precompute vertex indices and weights so step() only does gather + weighted sum
-            simplex_vertices = xp.array(tri.simplices[simplex_idx])
-            bary_weights = xp.array(bary_coords)
-            def _extract_barycentric(f):
-                return (f.flatten(order="F")[simplex_vertices] * bary_weights).sum(axis=1)
-            self._extract = _extract_barycentric
+            corner_indices = xp.array(corner_indices)
+            corner_weights = xp.array(corner_weights)
+            def _extract_bilinear(f):
+                return (f.flatten(order="F")[corner_indices] * corner_weights).sum(axis=1)
+            self._extract = _extract_bilinear
 
     def _setup_pml(self):
         """Build Perfectly Matched Layer absorption operators for each dimension."""

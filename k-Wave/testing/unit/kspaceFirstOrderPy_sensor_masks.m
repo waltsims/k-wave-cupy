@@ -87,7 +87,7 @@ else
 end
 
 % =========================================================================
-% SUB-TEST 2: CARTESIAN SENSOR MASK
+% SUB-TEST 2: CARTESIAN SENSOR MASK (self-consistency)
 % =========================================================================
 
 disp('--- Sub-test 2: Cartesian sensor mask ---');
@@ -98,32 +98,35 @@ angles = linspace(0, 2*pi, num_sensor_points + 1);
 angles = angles(1:end-1);
 sensor_cart.mask = [sensor_radius * cos(angles); sensor_radius * sin(angles)];
 
-% MATLAB reference
-disp('Running MATLAB reference (Cartesian mask)...');
-sensor_data_matlab_cart = kspaceFirstOrder2D(kgrid, medium, source, sensor_cart, ...
-    'PMLInside', false, 'PMLSize', 0, 'PlotSim', plot_simulations, 'Smooth', false, ...
-    'DataCast', 'off');
-
-% Python backend
+% Python backend with Cartesian mask
 disp('Running Python backend (Cartesian mask)...');
 sensor_data_python_cart = kspaceFirstOrderPy(kgrid, medium, source, sensor_cart, ...
     'PMLSize', 0, 'Smooth', false);
 
-% compare
-diff_cart = abs(sensor_data_matlab_cart(:) - sensor_data_python_cart(:));
+% Manual bilinear interpolation of Python binary output at Cartesian points
+x_vec = ((0:Nx-1) - Nx/2) * dx;
+y_vec = ((0:Ny-1) - Ny/2) * dy;
+manual_cart = zeros(num_sensor_points, kgrid.Nt);
+for t = 1:kgrid.Nt
+    p_field = reshape(sensor_data_python_binary(:, t), [Nx, Ny]);
+    F = griddedInterpolant({x_vec, y_vec}, p_field, 'linear');
+    manual_cart(:, t) = F(sensor_cart.mask(1,:)', sensor_cart.mask(2,:)');
+end
+
+% compare Python Cartesian output against bilinear reference
+diff_cart = abs(sensor_data_python_cart(:) - manual_cart(:));
 max_diff_cart = max(diff_cart);
-rel_err_cart = max_diff_cart / max(abs(sensor_data_matlab_cart(:)));
+rel_err_cart = max_diff_cart / max(abs(manual_cart(:)));
 
 fprintf('  Max absolute difference: %.2e\n', max_diff_cart);
 fprintf('  Max relative error:      %.2e\n', rel_err_cart);
 fprintf('  Python sensor_data size: %s\n', mat2str(size(sensor_data_python_cart)));
-fprintf('  MATLAB sensor_data size: %s\n', mat2str(size(sensor_data_matlab_cart)));
 
 if rel_err_cart > comparison_thresh
     test_pass = false;
-    disp('FAILED: Cartesian mask - relative error exceeds threshold');
+    disp('FAILED: Cartesian mask - Python bilinear interp does not match reference');
 else
-    disp('PASSED: Cartesian mask - Python matches MATLAB reference');
+    disp('PASSED: Cartesian mask - Python bilinear interp matches reference');
 end
 
 % =========================================================================

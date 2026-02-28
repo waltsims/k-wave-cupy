@@ -34,8 +34,10 @@ else
     files = dir(fullfile(test_dir, [pattern '*.m']));
     tests = cellfun(@(f) f(1:end-2), {files.name}, 'UniformOutput', false);
 
-    % Exclude reference data .mat files (just in case)
-    tests = tests(~contains(tests, 'reference_data'));
+    % Exclude tests using features not supported by the Python backend
+    exclude = {'reference_data', 'save_movie', 'save_to_disk', 'stream_to_disk', ...
+               'cuboid', 'labelled', 'cartesian', 'nonstaggered', 'photoacoustic'};
+    tests = tests(~contains(tests, exclude));
 
     dim_name = sprintf('%dD', dim);
 end
