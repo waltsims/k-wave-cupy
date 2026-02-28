@@ -185,7 +185,7 @@ class Simulation:
         self.num_recorded_time_points = self.Nt - self.record_start_index
 
     def _setup_cartesian_extract(self, cart_pos):
-        """Build self._extract using Delaunay interpolation (same Qhull backend as MATLAB)."""
+        """Build self._extract using bilinear/trilinear interpolation on the regular grid."""
         xp = self.xp
         cart = cart_pos if cart_pos.ndim == 2 else cart_pos.reshape(self.ndim, -1)
         self.n_sensor_points = cart.shape[1]
@@ -194,38 +194,34 @@ class Simulation:
         axis_coords = [(np.arange(N) - N // 2) * d for N, d in zip(self.dims, self.spacing)]
 
         if self.ndim == 1:
-            # scipy.spatial.Delaunay requires >= 2D points; use numpy interp for 1D
             x_vec, cart_x = axis_coords[0], cart.flatten()
             def _extract_1d_interp(f):
                 return xp.asarray(np.interp(cart_x, x_vec, _to_cpu(f).flatten(order="F")))
             self._extract = _extract_1d_interp
         else:
-            from scipy.spatial import Delaunay
+            # Convert Cartesian positions to continuous grid indices
+            frac_idx = np.array([(cart[d] - axis_coords[d][0]) / self.spacing[d]
+                                 for d in range(self.ndim)])  # (ndim, n_pts)
+            int_idx = np.clip(np.floor(frac_idx).astype(int), 0,
+                              np.array(self.dims)[:, None] - 2)
+            local = frac_idx - int_idx
 
-            # indexing='ij' gives ndgrid layout (MATLAB convention, not meshgrid)
-            grids = np.meshgrid(*axis_coords, indexing='ij')
-            # Flatten in Fortran order to match MATLAB's column-major layout
-            grid_pts = np.column_stack([g.flatten(order='F') for g in grids])
-            tri = Delaunay(grid_pts)
+            # F-order strides and 2^ndim corner enumeration
+            strides = np.cumprod([1] + list(self.dims[:-1]))
+            n_corners = 2 ** self.ndim
+            corner_indices = np.zeros((self.n_sensor_points, n_corners), dtype=int)
+            corner_weights = np.ones((self.n_sensor_points, n_corners))
+            for c in range(n_corners):
+                for d in range(self.ndim):
+                    bit = (c >> d) & 1
+                    corner_indices[:, c] += (int_idx[d] + bit) * strides[d]
+                    corner_weights[:, c] *= local[d] if bit else (1 - local[d])
 
-            query_pts = cart.T
-            simplex_idx = tri.find_simplex(query_pts)
-            if np.any(simplex_idx < 0):
-                raise ValueError("Cartesian sensor points must lie within the grid.")
-
-            # Barycentric coords from scipy's pre-computed affine transforms
-            # T @ (x - r) gives barycentric coords for first ndim vertices
-            affine_mat = tri.transform[simplex_idx, :self.ndim]
-            affine_offset = tri.transform[simplex_idx, self.ndim]
-            bary_first = np.einsum('ijk,ik->ij', affine_mat, query_pts - affine_offset)
-            bary_coords = np.column_stack([bary_first, 1 - bary_first.sum(axis=1)])
-
-            # Precompute vertex indices and weights so step() only does gather + weighted sum
-            simplex_vertices = xp.array(tri.simplices[simplex_idx])
-            bary_weights = xp.array(bary_coords)
-            def _extract_barycentric(f):
-                return (f.flatten(order="F")[simplex_vertices] * bary_weights).sum(axis=1)
-            self._extract = _extract_barycentric
+            corner_indices = xp.array(corner_indices)
+            corner_weights = xp.array(corner_weights)
+            def _extract_bilinear(f):
+                return (f.flatten(order="F")[corner_indices] * corner_weights).sum(axis=1)
+            self._extract = _extract_bilinear
 
     def _setup_pml(self):
         """Build Perfectly Matched Layer absorption operators for each dimension."""
@@ -302,10 +298,13 @@ class Simulation:
             k_mag_sq = k_mag_sq + k**2
         k_mag = xp.sqrt(k_mag_sq)
 
-        # Single kappa from k-magnitude ensures correct dispersion relation in N-D
+        # k-space correction: kappa = sin(omega*dt/2) / (omega*dt/2) where omega = c_ref*|k|
+        # MATLAB: sinc(A) = sin(pi*A)/(pi*A), so sinc(c*k*dt/2) gives sin(pi*A)/(pi*A)
+        # NumPy:  sinc(x) = sin(pi*x)/(pi*x), so sinc(A/pi) gives sin(A)/A ← correct
+        # Both evaluate the unnormalized sinc of omega*dt/2 (Tabei et al., JASA 2002, Eq. 10)
         self.kappa = xp.sinc((self.c_ref * k_mag * self.dt / 2) / np.pi)
 
-        # Source kappa: cos instead of sinc
+        # Source kappa: cos correction for time-varying sources (Cox et al., IEEE IUS 2018)
         self.source_kappa = xp.cos(self.c_ref * k_mag * self.dt / 2)
 
         # Per-dimension operators handle staggered grid shifts; kappa applied globally
@@ -353,45 +352,53 @@ class Simulation:
             self._nonlinear_factor = lambda rho: (2*rho + self.rho0) / self.rho0
 
     def _setup_source_operators(self):
-        """Build time-varying source operators."""
+        """Build time-varying source injection operators.
+
+        Source scaling follows kspaceFirstOrder_scaleSourceTerms.m.
+
+        Pressure sources are injected as mass sources into the split density
+        fields (rho_x, rho_y, ...).  Since p = c0^2 * (rho_x + rho_y + ...),
+        the user-supplied pressure must be converted to density and divided
+        equally across N = ndim components:
+
+            dirichlet:  source.p / (N * c0^2)
+            additive:   source.p * 2*dt / (N * c0 * dx)
+
+        The 1/c0^2 converts pressure to density (equation of state).
+        The 1/N splits evenly so the sum reconstructs the correct total.
+        The 2*dt/(c0*dx) factor accounts for the leapfrog time discretization
+        (see Cox et al., IEEE IUS 2018).
+
+        Velocity sources use per-axis grid spacing (dx, dy, dz):
+
+            additive:   source.ux * 2*c0*dt / dx   (and dy for uy, dz for uz)
+        """
         xp = self.xp
-        dx = self.spacing[0]
         grid_size = int(np.prod(self.grid_shape))
 
-        def build_op(mask_raw, signal_raw, mode, scale_dirichlet, scale_additive, is_pressure=False):
+        def build_op(mask_raw, signal_raw, mode, scale):
+            """Build a source injection operator for one field variable."""
             if not (_is_enabled(mask_raw) and _is_enabled(signal_raw)):
-                return (lambda t, field, dim: field) if is_pressure else (lambda t, field: field)
+                return None
 
             mask = xp.array(mask_raw, dtype=bool).flatten(order="F")
             if mask.size == 1:
                 mask = xp.full(self.grid_shape, bool(mask[0]), dtype=bool).flatten(order="F")
             n_src = int(xp.sum(mask))
 
-            # Handle signal: can be 1D (Nt,) or 2D (n_src, Nt)
             signal_arr = xp.array(signal_raw, dtype=float, order="F")
             if signal_arr.ndim == 1:
-                # 1D signal: same value for all source points, reshape to (1, Nt)
                 signal = signal_arr.reshape(1, -1)
-                signal_len = signal.shape[1]
             else:
-                # 2D signal: (n_src, Nt) in Fortran order
                 signal = signal_arr.reshape(-1, signal_arr.shape[-1], order="F") if signal_arr.ndim > 2 else signal_arr
-                signal_len = signal.shape[1]
 
-            # Scale factor depends on mode
-            c0_flat = self.c0.flatten(order="F")
-            c0_src = c0_flat[mask] if c0_flat.size > 1 else xp.full(n_src, float(c0_flat))
-            if mode == "dirichlet":
-                scale = 1.0 / scale_dirichlet(c0_src)
-            else:
-                scale = scale_additive(c0_src)
-            # Ensure scale is an array for consistent handling
-            scale = xp.atleast_1d(xp.asarray(scale))
+            scaled = signal * xp.atleast_1d(xp.asarray(scale))[:, None]
+            signal_len = scaled.shape[1]
 
             def get_val(t):
-                if signal.shape[0] == 1:
-                    return xp.full(n_src, float(signal[0, t])) * scale
-                return signal[:, t] * scale
+                if scaled.shape[0] == 1:
+                    return xp.full(n_src, float(scaled[0, t]))
+                return scaled[:, t]
 
             def dirichlet(t, field):
                 if t >= signal_len: return field
@@ -399,33 +406,68 @@ class Simulation:
                 flat[mask] = get_val(t)
                 return flat.reshape(self.grid_shape, order="F")
 
-            def additive(t, field):
+            def additive_kspace(t, field):
                 if t >= signal_len: return field
                 src = xp.zeros(grid_size, dtype=field.dtype)
                 src[mask] = get_val(t)
                 src = src.reshape(self.grid_shape, order="F")
                 return field + self._diff(src, self.source_kappa, apply_kappa=False)
 
-            def additive_raw(t, field):
+            def additive_no_correction(t, field):
                 if t >= signal_len: return field
                 flat = field.flatten(order="F")
                 flat[mask] += get_val(t)
                 return flat.reshape(self.grid_shape, order="F")
 
-            base = {"dirichlet": dirichlet, "additive": additive}.get(mode, additive_raw)
-            return (lambda t, field, dim: base(t, field) if dim == 0 else field) if is_pressure else base
+            ops = {"dirichlet": dirichlet, "additive": additive_kspace}
+            return ops.get(mode, additive_no_correction)
 
-        self._source_p_op = build_op(
-            _attr(self.source, 'p_mask', 0), _attr(self.source, 'p', 0),
-            _attr(self.source, 'p_mode', 'additive'),
-            lambda c: c**2, lambda c: 2*self.dt/(c*dx), is_pressure=True)
+        def source_scale(mask_raw, c0):
+            """Get per-source-point sound speed values."""
+            mask = xp.array(mask_raw, dtype=bool).flatten(order="F")
+            if mask.size == 1:
+                mask = xp.full(self.grid_shape, bool(mask[0]), dtype=bool).flatten(order="F")
+            c0_flat = c0.flatten(order="F")
+            n_src = int(xp.sum(mask))
+            return c0_flat[mask] if c0_flat.size > 1 else xp.full(n_src, float(c0_flat))
 
+        # --- Pressure source ---
+        p_mask = _attr(self.source, 'p_mask', 0)
+        p_signal = _attr(self.source, 'p', 0)
+        p_mode = _attr(self.source, 'p_mode', 'additive')
+        N = self.ndim
+        if _is_enabled(p_mask) and _is_enabled(p_signal):
+            c0_src = source_scale(p_mask, self.c0)
+            dx = self.spacing[0]
+            if p_mode == "dirichlet":
+                # rho_i = source.p / (N * c0^2)
+                scale = 1.0 / (N * c0_src**2)
+            else:
+                # rho_i += source.p * 2*dt / (N * c0 * dx)
+                scale = 2 * self.dt / (N * c0_src * dx)
+            op = build_op(p_mask, p_signal, p_mode, scale)
+            self._source_p_op = lambda t, field, dim, _op=op: _op(t, field)
+        else:
+            self._source_p_op = lambda t, field, dim: field
+
+        # --- Velocity sources (per-axis grid spacing) ---
+        u_mask = _attr(self.source, 'u_mask', 0)
+        u_mode = _attr(self.source, 'u_mode', 'additive')
         self._source_u_ops = []
         for i, vel in enumerate(['ux', 'uy', 'uz'][:self.ndim]):
-            self._source_u_ops.append(build_op(
-                _attr(self.source, 'u_mask', 0), _attr(self.source, vel, 0),
-                _attr(self.source, 'u_mode', 'additive'),
-                lambda c: 1, lambda c: 2*c*self.dt/dx))
+            u_signal = _attr(self.source, vel, 0)
+            di = self.spacing[i]  # dx for ux, dy for uy, dz for uz
+            if _is_enabled(u_mask) and _is_enabled(u_signal):
+                c0_src = source_scale(u_mask, self.c0)
+                if u_mode == "dirichlet":
+                    scale = xp.ones_like(c0_src)
+                else:
+                    # u_i += source.u_i * 2*c0*dt / d_i
+                    scale = 2 * c0_src * self.dt / di
+                op = build_op(u_mask, u_signal, u_mode, scale)
+                self._source_u_ops.append(op)
+            else:
+                self._source_u_ops.append(lambda t, field: field)
 
     def _setup_fields(self):
         """Initialize pressure, velocity, and density fields."""
@@ -504,7 +546,7 @@ class Simulation:
                 self.rho_split[i] = self._p0_initial / (self.c0**2 * self.ndim)
                 self.u[i] = (self.dt / (2 * self.rho0_staggered[i])) * self._diff(self.p, self.op_grad_list[i])
 
-        # Record sensor data (binary: index extraction, Cartesian: Delaunay interpolation)
+        # Record sensor data (binary: index extraction, Cartesian: bilinear/trilinear interpolation)
         if self.t >= self.record_start_index:
             file_index = self.t - self.record_start_index
             if 'p' in self.sensor_data:

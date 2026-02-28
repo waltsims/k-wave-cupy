@@ -133,9 +133,9 @@ end
 ```
 
 **Example Test Names:**
-- `kspaceFirstOrder2D_compare_binary_and_cartesian_sensor_mask.m`
-- `kspaceFirstOrderPy_binary_sensor_mask_2D.m`
-- `kWaveArray_circular_piston_3D.m`
+- `kspaceFirstOrder2D_compare_plane_waves.m`
+- `kspaceFirstOrderPy_sensor_masks.m`
+- `kspaceFirstOrderPy_record_options.m`
 
 ### Running Examples
 
@@ -183,11 +183,10 @@ The Python/CuPy backend (`kspaceFirstOrderPy`) is under active development and h
 
 **Sensor Masks:**
 - ✅ **Supported**: Binary grid masks (e.g., `sensor.mask = ones(Nx, Ny)` or `makeCircle()`)
-- ❌ **Not yet supported**: Cartesian coordinate masks (e.g., `makeCartCircle()` output)
-- **Workaround**: Convert Cartesian masks to binary using `sensor.mask = cart2grid(kgrid, cart_coords)`
+- ✅ **Supported**: Cartesian coordinate masks (e.g., `makeCartCircle()` output, Delaunay interpolation)
+- ✅ **Supported**: Empty sensor (defaults to full-grid recording)
 
 **Other Limitations:**
-- Absorption/attenuation not yet implemented (set `medium.alpha_coeff = 0`)
 - Advanced sensor types (directional, frequency response) not implemented
 
 When creating examples or tests for the Python backend, ensure they only use supported features.
@@ -195,7 +194,7 @@ When creating examples or tests for the Python backend, ensure they only use sup
 ### File Patterns and Conventions
 
 - **Examples**: `k-Wave/examples/example_*.m` - Documented usage examples
-- **Unit Tests**: `k-Wave/testing/unit/*_test*.m` - Individual feature tests
+- **Unit Tests**: `k-Wave/testing/unit/kspaceFirstOrder*_*.m` - Individual feature tests
 - **Helper Functions**: `k-Wave/private/` - Internal implementation details
 - **Utilities**: Grid creation (`make*.m`), post-processing (`*Plot.m`, `*Filter.m`)
 
@@ -223,21 +222,43 @@ When working on the Python backend:
   ```bash
   arch -arm64 /Applications/MATLAB_R2024b.app/bin/matlab -batch "run('script.m')"
   ```
-- Run tests with MATLAB using this venv:
-  ```bash
-  arch -arm64 /Applications/MATLAB_R2024b.app/bin/matlab -batch "pyenv('Version', fullfile(pwd,'.venv310','bin','python')); addpath('k-Wave'); addpath('tests'); addpath('k-Wave/testing/unit'); runtests({'tests/test_interop_sanity','k-Wave/testing/unit/test_interface_1D'});"
-  ```
 - If MATLAB reports the environment is already loaded, restart MATLAB and rerun the command.
 
-#### Parity test command
+#### Run all Python-specific tests (no shims needed)
 ```bash
-arch -arm64 /Applications/MATLAB_R2024b.app/bin/matlab -batch "pyenv('Version', fullfile(pwd,'.venv310','bin','python')); addpath('k-Wave'); addpath('tests'); addpath('k-Wave/testing/unit'); runtests({'tests/test_interop_sanity','tests/test_1d_parity','k-Wave/testing/unit/test_interface_1D'});"
+arch -arm64 /Applications/MATLAB_R2024b.app/bin/matlab -batch "
+  pyenv('Version', fullfile(pwd,'.venv310','bin','python'));
+  addpath('k-Wave');
+  cd('k-Wave/testing/unit');
+  runUnitTests('kspaceFirstOrderPy')"
 ```
 
-#### Comprehensive 1D test command (Python backend)
+#### Generate 2D/3D reference data (MATLAB backend, no shims)
 ```bash
-arch -arm64 /Applications/MATLAB_R2024b.app/bin/matlab -batch "pyenv('Version', fullfile(pwd,'.venv310','bin','python')); addpath('k-Wave'); addpath('tests/shims'); cd('k-Wave/testing/unit'); kspaceFirstOrder1D_compare_plane_waves(false, false)"
+arch -arm64 /Applications/MATLAB_R2024b.app/bin/matlab -batch "
+  addpath('k-Wave');
+  cd('k-Wave/testing/unit');
+  kspaceFirstOrder2D_compare_plane_waves(false, false)"
 ```
+
+#### Run 1D/2D/3D parity tests (Python vs MATLAB reference, via shims)
+```bash
+arch -arm64 /Applications/MATLAB_R2024b.app/bin/matlab -batch "
+  pyenv('Version', fullfile(pwd,'.venv310','bin','python'));
+  addpath('k-Wave'); addpath('tests/shims');
+  cd('k-Wave/testing/unit');
+  kspaceFirstOrder1D_compare_plane_waves(false, false)"
+```
+Replace `1D` with `2D` or `3D` for other dimensions.
+
+#### Run orchestrator (all Py tests or per-dimension parity)
+```bash
+arch -arm64 /Applications/MATLAB_R2024b.app/bin/matlab -batch "
+  pyenv('Version', fullfile(pwd,'.venv310','bin','python'));
+  addpath('k-Wave'); addpath('tests');
+  run_py_tests()"
+```
+Or `run_py_tests(1)` / `run_py_tests(2)` / `run_py_tests(3)` for per-dimension parity.
 
 - To visualise differences, run `tests/plot_1d_parity.m` (saves `tests/plots/1d_parity.png`).
 
