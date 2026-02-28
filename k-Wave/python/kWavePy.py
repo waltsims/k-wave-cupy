@@ -298,10 +298,13 @@ class Simulation:
             k_mag_sq = k_mag_sq + k**2
         k_mag = xp.sqrt(k_mag_sq)
 
-        # Single kappa from k-magnitude ensures correct dispersion relation in N-D
+        # k-space correction: kappa = sin(omega*dt/2) / (omega*dt/2) where omega = c_ref*|k|
+        # MATLAB: sinc(A) = sin(pi*A)/(pi*A), so sinc(c*k*dt/2) gives sin(pi*A)/(pi*A)
+        # NumPy:  sinc(x) = sin(pi*x)/(pi*x), so sinc(A/pi) gives sin(A)/A ← correct
+        # Both evaluate the unnormalized sinc of omega*dt/2 (Tabei et al., JASA 2002, Eq. 10)
         self.kappa = xp.sinc((self.c_ref * k_mag * self.dt / 2) / np.pi)
 
-        # Source kappa: cos instead of sinc
+        # Source kappa: cos correction for time-varying sources (Cox et al., IEEE IUS 2018)
         self.source_kappa = xp.cos(self.c_ref * k_mag * self.dt / 2)
 
         # Per-dimension operators handle staggered grid shifts; kappa applied globally
