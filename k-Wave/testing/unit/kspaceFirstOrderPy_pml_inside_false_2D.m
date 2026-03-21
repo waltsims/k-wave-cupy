@@ -88,7 +88,9 @@ result_small = kspaceFirstOrderPy(kgrid_small, medium, source_small, sensor_smal
 % COMPARISON
 % =========================================================================
 
-% p_final from Python already trims PML, so both should be Nx x Ny
+% Baseline used PMLInside=true on expanded grid, so trim PML manually
+result_big.p_final = result_big.p_final(pml+1:end-pml, pml+1:end-pml);
+
 fprintf('Baseline p_final size: [%s]\n', num2str(size(result_big.p_final)));
 fprintf('Test p_final size:     [%s]\n', num2str(size(result_small.p_final)));
 
