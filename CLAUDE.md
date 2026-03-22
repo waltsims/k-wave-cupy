@@ -184,6 +184,9 @@ The project is implementing a **minimalistic Python/CuPy backend** following the
 - ✅ Cartesian coordinate masks (e.g., `makeCartCircle()` output, Delaunay interpolation)
 - ✅ Empty sensor (defaults to full-grid recording)
 
+**Other Limitations:**
+- Advanced sensor types (directional, frequency response) not implemented
+- See `missing-features.tsv` for a full inventory of unsupported features, affected examples, and proposed fixes
 **Recording:**
 - ✅ `sensor.record` with pressure (`p`), velocity (`u`, `ux`, `uy`, `uz`), staggered/non-staggered variants
 - ✅ Aggregate fields: `p_max`, `p_min`, `p_rms`, `p_final`, velocity equivalents
