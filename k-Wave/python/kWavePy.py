@@ -8,7 +8,8 @@ unchanged via py.importlib.import_module('kWavePy').
 """
 from kwave.solvers.kspace_solver import (  # noqa: F401
     Simulation,
+    acoustic_intensity,
     create_simulation,
-    simulate_from_dicts,
     interop_sanity,
+    simulate_from_dicts,
 )
