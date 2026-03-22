@@ -198,6 +198,20 @@ if ~isempty(record)
             sensor_data.(record{i}) = double(res{record{i}});
         end
     end
+    % Strip PML from _final fields when PMLInside=false (grid was expanded)
+    if ~p.Results.PMLInside
+        final_fields = fieldnames(sensor_data);
+        final_fields = final_fields(endsWith(final_fields, '_final'));
+        for i = 1:numel(final_fields)
+            f = sensor_data.(final_fields{i});
+            switch kgrid.dim
+                case 1, f = f(exp_coeff(1)+1:end-exp_coeff(1));
+                case 2, f = f(exp_coeff(1)+1:end-exp_coeff(1), exp_coeff(2)+1:end-exp_coeff(2));
+                case 3, f = f(exp_coeff(1)+1:end-exp_coeff(1), exp_coeff(2)+1:end-exp_coeff(2), exp_coeff(3)+1:end-exp_coeff(3));
+            end
+            sensor_data.(final_fields{i}) = f;
+        end
+    end
 else
     sensor_data = double(res{'p'});
 end
