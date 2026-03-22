@@ -202,9 +202,14 @@ if ~isempty(record)
     if ~p.Results.PMLInside
         final_fields = fieldnames(sensor_data);
         final_fields = final_fields(endsWith(final_fields, '_final'));
-        idx = arrayfun(@(d) exp_coeff(d)+1:size(sensor_data.(final_fields{1}),d)-exp_coeff(d), 1:kgrid.dim, 'UniformOutput', false);
         for i = 1:numel(final_fields)
-            sensor_data.(final_fields{i}) = sensor_data.(final_fields{i})(idx{:});
+            f = sensor_data.(final_fields{i});
+            switch kgrid.dim
+                case 1, f = f(exp_coeff(1)+1:end-exp_coeff(1));
+                case 2, f = f(exp_coeff(1)+1:end-exp_coeff(1), exp_coeff(2)+1:end-exp_coeff(2));
+                case 3, f = f(exp_coeff(1)+1:end-exp_coeff(1), exp_coeff(2)+1:end-exp_coeff(2), exp_coeff(3)+1:end-exp_coeff(3));
+            end
+            sensor_data.(final_fields{i}) = f;
         end
     end
 else
