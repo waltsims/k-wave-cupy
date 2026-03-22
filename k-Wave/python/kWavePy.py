@@ -478,6 +478,10 @@ class Simulation:
         # Staggered density for each dimension
         self.rho0_staggered = [self._stagger(self.rho0, axis) for axis in range(self.ndim)]
 
+        # Precompute fixed coefficients used every time step
+        self.c0_sq = self.c0 ** 2
+        self.dt_over_rho0 = [self.dt / rho for rho in self.rho0_staggered]
+
         # Sensor data storage (sized based on record_start_index)
         self.sensor_data = {}
         if 'p' in self.record:
@@ -497,10 +501,6 @@ class Simulation:
         p0_raw = _attr(self.source, 'p0', 0)
         self._p0_initial = _expand_to_grid(p0_raw, self.grid_shape, xp, "p0") if _is_enabled(p0_raw) else None
 
-        # Initialize velocity at t=-dt/2 for leapfrog
-        for i in range(self.ndim):
-            self.u[i] += (self.dt / (2 * self.rho0_staggered[i])) * self._diff(self.p, self.op_grad_list[i])
-
     def step(self):
         """Advance simulation by one time step. Returns self for chaining."""
         if not self._is_setup:
@@ -515,7 +515,7 @@ class Simulation:
             pml_sg = self.pml_sg_list[i]
             # Double PML application implements second-order absorption (split-field PML)
             self.u[i] = pml_sg * (pml_sg * self.u[i]
-                - (self.dt / self.rho0_staggered[i]) * self._diff(self.p, self.op_grad_list[i]))
+                - self.dt_over_rho0[i] * self._diff(self.p, self.op_grad_list[i]))
             self.u[i] = self._source_u_ops[i](self.t, self.u[i])
 
         # Mass conservation: drho_i/dt = -rho0 * div_i(u_i), with PML
@@ -533,15 +533,15 @@ class Simulation:
         # Equation of state
         rho_total = sum(self.rho_split)
         div_u_total = sum(div_u_components)
-        self.p = self.c0**2 * (rho_total + self._absorption(div_u_total)
-                               - self._dispersion(rho_total) + self._nonlinearity(rho_total))
+        self.p = self.c0_sq * (rho_total + self._absorption(div_u_total)
+                              - self._dispersion(rho_total) + self._nonlinearity(rho_total))
 
         # At t=0, override equation of state with p0; reset split densities and u(-dt/2) for leapfrog
         if self.t == 0 and self._p0_initial is not None:
             self.p = self._p0_initial.copy()
             for i in range(self.ndim):
-                self.rho_split[i] = self._p0_initial / (self.c0**2 * self.ndim)
-                self.u[i] = (self.dt / (2 * self.rho0_staggered[i])) * self._diff(self.p, self.op_grad_list[i])
+                self.rho_split[i] = self._p0_initial / (self.c0_sq * self.ndim)
+                self.u[i] = (self.dt_over_rho0[i] / 2) * self._diff(self.p, self.op_grad_list[i])
 
         # Record sensor data (binary: index extraction, Cartesian: bilinear/trilinear interpolation)
         if self.t >= self.record_start_index:
@@ -567,6 +567,7 @@ class Simulation:
         result.update(_compute_aggregates(result, self.ndim))
         if 'p' in result and any(f'u{a}' in result for a in 'xyz'):
             result.update(acoustic_intensity(result))
+
         # Final-state snapshots: full grid at last timestep
         # (PMLInside handling is done by the MATLAB wrapper, so Python always sees the full grid)
         if 'p_final' in self.record:
