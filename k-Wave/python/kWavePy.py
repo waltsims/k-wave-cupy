@@ -567,7 +567,8 @@ class Simulation:
         result.update(_compute_aggregates(result, self.ndim))
         if 'p' in result and any(f'u{a}' in result for a in 'xyz'):
             result.update(acoustic_intensity(result))
-        # Final-state snapshots: always return full grid (MATLAB handles PML stripping)
+        # Final-state snapshots: full grid at last timestep
+        # (PMLInside handling is done by the MATLAB wrapper, so Python always sees the full grid)
         if 'p_final' in self.record:
             result['p_final'] = _to_cpu(self.p.copy())
         if any(f'u{a}_final' in self.record for a in 'xyz'):
