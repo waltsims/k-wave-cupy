@@ -174,23 +174,27 @@ The project is implementing a **minimalistic Python/CuPy backend** following the
 ### Development Progress
 - **Phase 1** ✅ **COMPLETE**: Data interop verification and 1D implementation achieved <1e-15 parity
 - **Phase 1.5** ✅ **COMPLETE**: Code refactoring to ~65 lines (Python) and ~40 lines (MATLAB)
-- **Phase 2** 🚧 **IN PROGRESS**: 2D/3D generalization with PML boundaries
-- **Phase 3** ✅ **READY**: CuPy GPU acceleration infrastructure implemented
+- **Phase 2** ✅ **COMPLETE**: 2D/3D generalization — all physics features pass at <2e-15 parity
+- **Phase 3** ✅ **COMPLETE**: CuPy GPU acceleration infrastructure implemented
 
 ### Python Backend Current Limitations
 
-The Python/CuPy backend (`kspaceFirstOrderPy`) is under active development and has the following limitations:
-
 **Sensor Masks:**
-- ✅ **Supported**: Binary grid masks (e.g., `sensor.mask = ones(Nx, Ny)` or `makeCircle()`)
-- ✅ **Supported**: Cartesian coordinate masks (e.g., `makeCartCircle()` output, Delaunay interpolation)
-- ✅ **Supported**: Empty sensor (defaults to full-grid recording)
+- ✅ Binary grid masks (e.g., `sensor.mask = ones(Nx, Ny)` or `makeCircle()`)
+- ✅ Cartesian coordinate masks (e.g., `makeCartCircle()` output, Delaunay interpolation)
+- ✅ Empty sensor (defaults to full-grid recording)
 
 **Other Limitations:**
 - Advanced sensor types (directional, frequency response) not implemented
 - See `missing-features.tsv` for a full inventory of unsupported features, affected examples, and proposed fixes
+**Recording:**
+- ✅ `sensor.record` with pressure (`p`), velocity (`u`, `ux`, `uy`, `uz`), staggered/non-staggered variants
+- ✅ Aggregate fields: `p_max`, `p_min`, `p_rms`, `p_final`, velocity equivalents
+- ✅ Intensity: `I`, `I_avg`
+- ✅ `sensor.record_start_index`
 
-When creating examples or tests for the Python backend, ensure they only use supported features.
+**Not Implemented:**
+- Advanced sensor types (directional, frequency response)
 
 ### File Patterns and Conventions
 
@@ -263,10 +267,25 @@ Or `run_py_tests(1)` / `run_py_tests(2)` / `run_py_tests(3)` for per-dimension p
 
 - To visualise differences, run `tests/plot_1d_parity.m` (saves `tests/plots/1d_parity.png`).
 
+### Benchmark Results (2D, MATLAB vs Python/NumPy)
+
+Branch: `main`, commit: `55a0f89`, date: 2026-03-21, machine: Apple Silicon (arm64)
+
+```
+Grid         Nt     MATLAB(s)    Python(s)    Ratio
+------------------------------------------------------
+64x64        96     0.178        0.806        0.22
+128x128      192    0.378        0.388        0.97
+256x256      384    1.661        4.057        0.41
+512x512      768    13.315       39.654       0.34
+```
+
+Ratio = MATLAB/Python (values <1 mean MATLAB is faster). The 64² Python time includes one-time startup overhead. Script: `tests/benchmark_2d.m`.
+
 ### Project Management
 
 - **Dependencies**: Managed via `uv` package manager (see `pyproject.toml`)
-- **Current Focus**: Implementing 2D/3D support and PML boundaries (see `plans/plan.md`)
+- **Current Focus**: Parity test suite and performance benchmarking (see `plans/plan.md`)
 - **Code Philosophy**: Minimalistic "academic code golf" approach - the code is the documentation
 - **Performance Target**: Match or exceed C++/CUDA implementations while maintaining interpretability
 
