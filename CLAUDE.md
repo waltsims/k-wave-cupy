@@ -194,9 +194,6 @@ The project is implementing a **minimalistic Python/CuPy backend** following the
 - ✅ Cartesian coordinate masks (e.g., `makeCartCircle()` output, Delaunay interpolation)
 - ✅ Empty sensor (defaults to full-grid recording)
 
-**Other Limitations:**
-- Advanced sensor types (directional, frequency response) not implemented
-- See `missing-features.tsv` for a full inventory of unsupported features, affected examples, and proposed fixes
 **Recording:**
 - ✅ `sensor.record` with pressure (`p`), velocity (`u`, `ux`, `uy`, `uz`), staggered/non-staggered variants
 - ✅ Aggregate fields: `p_max`, `p_min`, `p_rms`, `p_final`, velocity equivalents
@@ -205,6 +202,14 @@ The project is implementing a **minimalistic Python/CuPy backend** following the
 
 **Not Implemented:**
 - Advanced sensor types (directional, frequency response)
+- See `missing-features.tsv` for a full inventory of unsupported features, affected examples, and proposed fixes
+
+**Known solver cleanup TODOs** (in `~/git/k-wave-python/kwave/solvers/kspace_solver.py`):
+- Replace `_attr()` with plain `getattr()` calls
+- Delete `self.dims` — redundant with `self.grid_shape`
+- Precompute `op * kappa` products at setup to avoid per-step elementwise multiply in `_diff()`
+- Reuse `kwave/utils/pml.py:get_pml` for PML construction (needs `xp=` arg for CuPy)
+- Use `rfftn/irfftn` for ~2x speedup on real fields
 
 ### File Patterns and Conventions
 
