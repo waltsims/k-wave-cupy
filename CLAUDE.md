@@ -188,6 +188,7 @@ The Python/CuPy backend (`kspaceFirstOrderPy`) is under active development and h
 
 **Other Limitations:**
 - Advanced sensor types (directional, frequency response) not implemented
+- See `missing-features.tsv` for a full inventory of unsupported features, affected examples, and proposed fixes
 
 When creating examples or tests for the Python backend, ensure they only use supported features.
 
