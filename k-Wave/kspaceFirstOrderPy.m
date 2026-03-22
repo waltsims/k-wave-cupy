@@ -198,13 +198,15 @@ if ~isempty(record)
             sensor_data.(record{i}) = double(res{record{i}});
         end
     end
-    % Strip PML from _final fields when PMLInside=false (grid was expanded)
+    % Strip expanded PML region from _final fields (grid was padded by expandMatrix)
     if ~p.Results.PMLInside
         final_fields = fieldnames(sensor_data);
         final_fields = final_fields(endsWith(final_fields, '_final'));
-        idx = arrayfun(@(d) exp_coeff(d)+1:size(sensor_data.(final_fields{1}),d)-exp_coeff(d), 1:kgrid.dim, 'UniformOutput', false);
-        for i = 1:numel(final_fields)
-            sensor_data.(final_fields{i}) = sensor_data.(final_fields{i})(idx{:});
+        if ~isempty(final_fields)
+            idx = arrayfun(@(d) exp_coeff(d)+1:size(sensor_data.(final_fields{1}),d)-exp_coeff(d), 1:kgrid.dim, 'UniformOutput', false);
+            for i = 1:numel(final_fields)
+                sensor_data.(final_fields{i}) = sensor_data.(final_fields{i})(idx{:});
+            end
         end
     end
 else

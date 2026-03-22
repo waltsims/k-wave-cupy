@@ -501,10 +501,6 @@ class Simulation:
         p0_raw = _attr(self.source, 'p0', 0)
         self._p0_initial = _expand_to_grid(p0_raw, self.grid_shape, xp, "p0") if _is_enabled(p0_raw) else None
 
-        # Initialize velocity at t=-dt/2 for leapfrog
-        for i in range(self.ndim):
-            self.u[i] += (self.dt_over_rho0[i] / 2) * self._diff(self.p, self.op_grad_list[i])
-
     def step(self):
         """Advance simulation by one time step. Returns self for chaining."""
         if not self._is_setup:
