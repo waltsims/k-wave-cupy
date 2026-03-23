@@ -8,11 +8,20 @@ This is the k-Wave MATLAB Toolbox with an added CuPy-accelerated Python backend.
 
 **Project Structure:**
 - `k-Wave/` - Main MATLAB toolbox (legacy acoustic simulation toolkit)
-  - `python/kWavePy.py` - Python/CuPy compute engine implementation
+  - `python/kWavePy.py` - Thin shim re-exporting from k-wave-python (see below)
   - `kspaceFirstOrderPy.m` - MATLAB wrapper for Python backend
 - `plans/` - Development plan for Python/CuPy integration
 - `tests/` - Python backend integration and parity tests
+- `missing-features.tsv` - Inventory of unsupported Python backend features with affected examples
 - `pyproject.toml` - Python project configuration (using uv)
+
+**Solver Code Lives in k-wave-python:**
+The canonical Python solver is in the sibling repo `~/git/k-wave-python` (`kwave/solvers/kspace_solver.py`). This repo's `k-Wave/python/kWavePy.py` is a thin shim that re-exports from `kwave.solvers.kspace_solver`. All future solver changes should be made in k-wave-python, not here. The MATLAB wrapper (`kspaceFirstOrderPy.m`) is unchanged — it still does `py.importlib.import_module('kWavePy')`.
+
+**Setup requirement:** k-wave-python must be installed in the MATLAB Python environment:
+```bash
+uv pip install --python .venv310/bin/python -e ~/git/k-wave-python
+```
 
 ## Key Architecture Components
 
@@ -174,8 +183,9 @@ The project is implementing a **minimalistic Python/CuPy backend** following the
 ### Development Progress
 - **Phase 1** ✅ **COMPLETE**: Data interop verification and 1D implementation achieved <1e-15 parity
 - **Phase 1.5** ✅ **COMPLETE**: Code refactoring to ~65 lines (Python) and ~40 lines (MATLAB)
-- **Phase 2** ✅ **COMPLETE**: 2D/3D generalization — all physics features pass at <2e-15 parity
+- **Phase 2** ✅ **COMPLETE**: 2D/3D generalization with PML boundaries
 - **Phase 3** ✅ **COMPLETE**: CuPy GPU acceleration infrastructure implemented
+- **Phase 4** ✅ **COMPLETE**: Solver unified — canonical code in k-wave-python, this repo uses thin shim
 
 ### Python Backend Current Limitations
 
@@ -184,9 +194,6 @@ The project is implementing a **minimalistic Python/CuPy backend** following the
 - ✅ Cartesian coordinate masks (e.g., `makeCartCircle()` output, Delaunay interpolation)
 - ✅ Empty sensor (defaults to full-grid recording)
 
-**Other Limitations:**
-- Advanced sensor types (directional, frequency response) not implemented
-- See `missing-features.tsv` for a full inventory of unsupported features, affected examples, and proposed fixes
 **Recording:**
 - ✅ `sensor.record` with pressure (`p`), velocity (`u`, `ux`, `uy`, `uz`), staggered/non-staggered variants
 - ✅ Aggregate fields: `p_max`, `p_min`, `p_rms`, `p_final`, velocity equivalents
@@ -195,6 +202,14 @@ The project is implementing a **minimalistic Python/CuPy backend** following the
 
 **Not Implemented:**
 - Advanced sensor types (directional, frequency response)
+- See `missing-features.tsv` for a full inventory of unsupported features, affected examples, and proposed fixes
+
+**Known solver cleanup TODOs** (in `~/git/k-wave-python/kwave/solvers/kspace_solver.py`):
+- Replace `_attr()` with plain `getattr()` calls
+- Delete `self.dims` — redundant with `self.grid_shape`
+- Precompute `op * kappa` products at setup to avoid per-step elementwise multiply in `_diff()`
+- Reuse `kwave/utils/pml.py:get_pml` for PML construction (needs `xp=` arg for CuPy)
+- Use `rfftn/irfftn` for ~2x speedup on real fields
 
 ### File Patterns and Conventions
 
@@ -213,16 +228,26 @@ The project is implementing a **minimalistic Python/CuPy backend** following the
 
 ### Integration Points
 
-When working on the Python backend:
-- Data exchange happens through MATLAB's Python interface
+**Two-repo architecture:**
+- **k-wave-python** (`~/git/k-wave-python`): Canonical Python solver at `kwave/solvers/kspace_solver.py`. All solver changes go here.
+- **k-wave-cupy** (this repo): MATLAB toolbox + thin shim at `k-Wave/python/kWavePy.py` that re-exports from k-wave-python.
+- The adapter in `kwave/solvers/kwave_adapter.py` bridges k-wave-python's dataclasses (kWaveGrid, kWaveMedium, etc.) to the solver's SimpleNamespace inputs.
+
+**When working on the solver:**
+- Edit `~/git/k-wave-python/kwave/solvers/kspace_solver.py`
+- Run k-wave-python tests: `cd ~/git/k-wave-python && .venv/bin/python -m pytest tests/test_kspaceFirstOrder.py -v`
+- Run k-wave-cupy MATLAB tests to verify the shim still works (see commands below)
+
+**Data exchange:**
+- MATLAB wrapper builds Python dicts → `simulate_from_dicts()` → Simulation.run()
 - Key concern: Row-major (Python) vs column-major (MATLAB) array indexing
 - Validation against `acousticFieldPropagator` tests for correctness
-- Performance benchmarking against existing C++/CUDA codes
 
 ### MATLAB + Python Setup (arm64)
 
 - Supported Python for R2024b: 3.9, 3.10, 3.11, 3.12 (arm64). Do **not** use Intel builds.
 - Project venv: `.venv310` (Python 3.10.16, NumPy 2.2.6) created via `uv venv --python 3.10 .venv310` and `uv pip install --python .venv310/bin/python numpy`.
+- **Required:** Install k-wave-python (editable) for the solver shim: `uv pip install --python .venv310/bin/python -e ~/git/k-wave-python`
 - **Architecture Requirement**: On Apple Silicon systems, MATLAB must run with ARM64 architecture. If your terminal is emulating x86_64 (Rosetta), prefix commands with `arch -arm64`:
   ```bash
   arch -arm64 /Applications/MATLAB_R2024b.app/bin/matlab -batch "run('script.m')"

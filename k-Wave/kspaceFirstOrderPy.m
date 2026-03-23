@@ -158,7 +158,7 @@ end
 d_py = py.dict(pyargs(sensor_args{:}));
 
 % Run simulation and convert result back to MATLAB double
-res = kWavePy.simulate_from_dicts(k_py, m_py, s_py, d_py, pyargs('backend', char(p.Results.Backend)));
+res = kWavePy.simulate_from_dicts(k_py, m_py, s_py, d_py, pyargs('device', char(p.Results.Backend)));
 
 % Return struct matching MATLAB convention when sensor.record is set
 if ~isempty(record)
