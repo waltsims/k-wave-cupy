@@ -59,7 +59,7 @@ jobs:
           python-version: '3.10'
 
       - name: Install Python dependencies
-        run: pip install numpy scipy k-wave-python@git+https://github.com/waltsims/k-wave-python.git@k-wave-cupy-integration
+        run: pip install numpy scipy k-wave-python@git+https://github.com/waltsims/k-wave-python.git@add-cupy-solver
 
       - name: Set up MATLAB
         uses: matlab-actions/setup-matlab@v2
@@ -99,7 +99,7 @@ jobs:
           python-version: '3.10'
 
       - name: Install Python dependencies
-        run: pip install numpy scipy k-wave-python@git+https://github.com/waltsims/k-wave-python.git@k-wave-cupy-integration
+        run: pip install numpy scipy k-wave-python@git+https://github.com/waltsims/k-wave-python.git@add-cupy-solver
 
       - name: Set up MATLAB
         uses: matlab-actions/setup-matlab@v2
