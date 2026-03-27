@@ -56,3 +56,5 @@ __pycache__/
 
 tests/plots/
 *.pdf
+.coverage
+htmlcov/
